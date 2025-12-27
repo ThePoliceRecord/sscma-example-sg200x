@@ -15,7 +15,7 @@ import { DeviceChannleMode, UpdateStatus, PowerMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
-import { factoryResetApi, setDevicePowerApi } from "@/api/device/index";
+import { factoryResetApi, setDevicePowerApi, formatSDCardApi } from "@/api/device/index";
 
 const channelList = [
   { label: "Self-Host", value: DeviceChannleMode.Self },
@@ -47,6 +47,7 @@ function System() {
 
   const [isDashboard, setIsDashboard] = useState(false);
   const [factoryResetLoading, setFactoryResetLoading] = useState(false);
+  const [formatSDLoading, setFormatSDLoading] = useState(false);
   
   useEffect(() => {
     const param = parseUrlParam(window.location.href);
@@ -102,6 +103,40 @@ function System() {
           message.error("Failed to initiate factory reset");
         } finally {
           setFactoryResetLoading(false);
+        }
+      },
+    });
+  };
+
+  const handleFormatSDCard = () => {
+    Modal.confirm({
+      title: "Format SD Card",
+      icon: <ExclamationCircleOutlined style={{ color: "#ff4d4f" }} />,
+      content: (
+        <div>
+          <p>This will format the SD card with exFAT filesystem.</p>
+          <p className="text-red-500 font-bold mt-8">
+            All data on the SD card will be permanently deleted!
+          </p>
+        </div>
+      ),
+      okText: "Format",
+      okType: "danger",
+      cancelText: "Cancel",
+      centered: true,
+      onOk: async () => {
+        setFormatSDLoading(true);
+        try {
+          const response = await formatSDCardApi();
+          if (response.code === 0) {
+            message.success("SD card formatted successfully");
+          } else {
+            message.error(response.msg || "Failed to format SD card");
+          }
+        } catch (error) {
+          message.error("Failed to format SD card");
+        } finally {
+          setFormatSDLoading(false);
         }
       },
     });
@@ -261,6 +296,25 @@ function System() {
                 loading={factoryResetLoading}
               >
                 Factory Reset
+              </Button>
+            </div>
+          </div>
+
+          <div className="font-bold text-18 mb-14 my-24">SD Card</div>
+          <div className="bg-white rounded-20 px-24 py-24">
+            <div className="flex justify-between items-center">
+              <div className="flex-1 mr-20">
+                <span className="opacity-60 text-black">Format SD Card</span>
+                <p className="text-12 opacity-40 mt-4">
+                  Format the SD card with exFAT filesystem. All data on the SD card will be deleted.
+                </p>
+              </div>
+              <Button 
+                danger 
+                onClick={handleFormatSDCard}
+                loading={formatSDLoading}
+              >
+                Format SD Card
               </Button>
             </div>
           </div>

@@ -424,7 +424,10 @@ func (h *DeviceHandler) GetTimezoneList(w http.ResponseWriter, r *http.Request) 
 
 // UpdateChannel sets the update channel.
 func (h *DeviceHandler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
+	logger.Info("UpdateChannel endpoint called: method=%s", r.Method)
+
 	if r.Method != http.MethodPost {
+		logger.Warning("UpdateChannel: Method not allowed: %s", r.Method)
 		api.WriteError(w, -1, "Method not allowed")
 		return
 	}
@@ -432,19 +435,30 @@ func (h *DeviceHandler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Channel int    `json:"channel"`
 		URL     string `json:"url"`
+		// Frontend sends serverUrl, so accept both for compatibility
+		ServerURL string `json:"serverUrl"`
 	}
 	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("UpdateChannel: Failed to parse JSON body: %v", err)
 		api.WriteError(w, -1, "Invalid request body")
 		return
 	}
 
-	logger.Info("API UpdateChannel request: channel=%d, url=%s", req.Channel, req.URL)
+	// Use serverUrl if url is empty (frontend sends serverUrl)
+	url := req.URL
+	if url == "" {
+		url = req.ServerURL
+	}
 
-	if err := h.upgradeMgr.UpdateChannel(req.Channel, req.URL); err != nil {
+	logger.Info("API UpdateChannel request: channel=%d, url=%s", req.Channel, url)
+
+	if err := h.upgradeMgr.UpdateChannel(req.Channel, url); err != nil {
+		logger.Error("UpdateChannel: Failed to update channel: %v", err)
 		api.WriteError(w, -1, "Failed to update channel")
 		return
 	}
 
+	logger.Info("UpdateChannel: Successfully updated channel=%d", req.Channel)
 	api.WriteSuccess(w, map[string]interface{}{"channel": req.Channel})
 }
 
@@ -547,5 +561,38 @@ func (h *DeviceHandler) FactoryReset(w http.ResponseWriter, r *http.Request) {
 	api.WriteSuccess(w, map[string]interface{}{
 		"status":  "scheduled",
 		"message": "Factory reset scheduled. Please reboot the device to apply.",
+	})
+}
+
+// FormatSDCard formats the SD card with exfat filesystem.
+func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	logger.Info("Starting SD card format")
+
+	// Unmount if currently mounted
+	exec.Command("umount", "/mnt/sd").Run()
+
+	// Format the SD card partition with exfat (vfat for compatibility)
+	if err := exec.Command("mkfs.vfat", "-F", "32", "/dev/mmcblk1p1").Run(); err != nil {
+		logger.Error("Failed to format SD card: %v", err)
+		api.WriteError(w, -1, "Failed to format SD card")
+		return
+	}
+
+	logger.Info("SD card formatted successfully with exFAT")
+
+	// Remount the SD card
+	os.MkdirAll("/mnt/sd", 0755)
+	if err := exec.Command("mount", "/dev/mmcblk1p1", "/mnt/sd").Run(); err != nil {
+		logger.Warning("SD card formatted but failed to remount: %v", err)
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{
+		"status":  "success",
+		"message": "SD card formatted successfully with exFAT",
 	})
 }

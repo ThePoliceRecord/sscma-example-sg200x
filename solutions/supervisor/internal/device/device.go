@@ -99,7 +99,7 @@ type ModelPaths struct {
 // QueryDeviceInfo returns device information for the frontend.
 func QueryDeviceInfo() *DeviceInfo {
 	upgradeMgr := upgrade.NewUpgradeManager()
-	channel, url := upgradeMgr.GetChannel()
+	channel, url := upgradeMgr.GetChannelForDisplay()
 
 	needRestart := 0
 	if upgradeMgr.IsUpgradeDone() {

@@ -138,11 +138,33 @@ func (m *UpgradeManager) GetChannel() (channel int, url string) {
 	return
 }
 
+// GetChannelForDisplay returns the channel and base URL for display in the UI.
+// This strips the checksum filename if present to show only the base URL.
+func (m *UpgradeManager) GetChannelForDisplay() (channel int, url string) {
+	channel, url = m.GetChannel()
+	// Remove the checksum filename suffix for display
+	if strings.HasSuffix(url, ChecksumFileName) {
+		url = strings.TrimSuffix(url, "/"+ChecksumFileName)
+	}
+	return
+}
+
 // UpdateChannel sets the upgrade channel and server URL.
 func (m *UpgradeManager) UpdateChannel(channel int, url string) error {
 	logger.Info("UpdateChannel: channel=%d, url=%s", channel, url)
 	if m.IsUpgrading() {
 		return fmt.Errorf("upgrade in progress")
+	}
+
+	// Validate custom URL if provided
+	if url != "" {
+		// If URL doesn't end with the checksum file, append it
+		if !strings.HasSuffix(url, ChecksumFileName) {
+			// Remove trailing slash if present
+			url = strings.TrimSuffix(url, "/")
+			url = url + "/" + ChecksumFileName
+		}
+		logger.Info("Normalized URL to: %s", url)
 	}
 
 	content := strconv.Itoa(channel)
@@ -155,6 +177,12 @@ func (m *UpgradeManager) UpdateChannel(channel int, url string) error {
 
 	// Clean up upgrade state
 	m.Clean()
+
+	// Trigger immediate query of latest version
+	if url != "" {
+		go m.QueryLatestVersion()
+	}
+
 	return nil
 }
 
@@ -208,9 +236,11 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 		// Parse GitHub releases URL
 		url, err := m.parseGitHubReleasesURL(OfficialURL)
 		if err != nil {
+			logger.Warning("Failed to parse GitHub URL: %v", err)
 			// Fallback to Seeed URL
 			url, err = m.getSeeedLatestURL()
 			if err != nil {
+				logger.Error("Failed to get Seeed URL: %v", err)
 				return err
 			}
 		}
@@ -220,15 +250,20 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 
 	// Download Checksum file
 	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
+	logger.Info("Downloading checksum from %s to %s", checksumURL, checksumPath)
 	if err := m.downloadFile(checksumURL, checksumPath); err != nil {
+		logger.Error("Failed to download checksum file: %v", err)
 		return err
 	}
+	logger.Info("Successfully downloaded checksum file")
 
 	// Parse version info
 	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
+		logger.Error("Failed to parse version info: %v", err)
 		return err
 	}
+	logger.Info("Parsed version info: OS=%s, Version=%s, File=%s", info.OSName, info.Version, info.FileName)
 
 	// Save version info
 	versionFile := filepath.Join(UpgradeFilesDir, "version.json")
@@ -239,10 +274,12 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 	}
 	data, _ := json.Marshal(versionData)
 	os.WriteFile(versionFile, data, 0644)
+	logger.Info("Saved version info to %s", versionFile)
 
 	// Save URL for download
 	baseURL := strings.TrimSuffix(checksumURL, "/"+ChecksumFileName)
 	os.WriteFile(filepath.Join(UpgradeFilesDir, URLFileName), []byte(baseURL), 0644)
+	logger.Info("Saved base URL: %s", baseURL)
 
 	return nil
 }
@@ -406,12 +443,6 @@ func (m *UpgradeManager) performUpgrade() {
 
 // downloadOTA downloads the OTA package.
 func (m *UpgradeManager) downloadOTA() error {
-	// Mount recovery partition
-	if err := m.mountRecovery(); err != nil {
-		return err
-	}
-	defer m.unmountRecovery()
-
 	// Get version info
 	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
 	info, err := m.parseVersionInfo(checksumPath)
@@ -434,52 +465,41 @@ func (m *UpgradeManager) downloadOTA() error {
 	baseURL := strings.TrimSpace(string(urlData))
 	downloadURL := baseURL + "/" + info.FileName
 
-	// Download to temp directory
+	// Download to /userdata/.upgrade directory (not recovery partition)
+	// This avoids "no space left" errors on small recovery partitions
 	tmpPath := filepath.Join(UpgradeTmpDir, info.FileName)
+	logger.Info("Downloading OTA package to %s", tmpPath)
 	if err := m.downloadFileWithProgress(downloadURL, tmpPath, 0, 50); err != nil {
 		return err
 	}
 
 	// Verify Checksum
+	logger.Info("Verifying checksum of downloaded file")
 	if err := m.verifyChecksum(tmpPath, info.Checksum); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
 
-	// Copy to recovery partition
-	destPath := filepath.Join(m.mountPath, info.FileName)
-	if err := copyFile(tmpPath, destPath); err != nil {
-		return err
-	}
-
-	// Copy Checksum file
-	copyFile(checksumPath, filepath.Join(m.mountPath, ChecksumFileName))
-
-	// Clean temp
-	os.Remove(tmpPath)
-
+	logger.Info("OTA package downloaded and verified successfully")
 	return nil
 }
 
 // performOTAUpgrade writes the OTA update to partitions.
 func (m *UpgradeManager) performOTAUpgrade() error {
-	// Mount recovery partition
-	if err := m.mountRecovery(); err != nil {
-		return err
-	}
-	defer m.unmountRecovery()
-
-	// Find OTA file
-	checksumPath := filepath.Join(m.mountPath, ChecksumFileName)
+	// Get version info to find the OTA file
+	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
 	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
 		return err
 	}
 
-	zipPath := filepath.Join(m.mountPath, info.FileName)
+	// Read OTA file from /userdata/.upgrade (not recovery partition)
+	zipPath := filepath.Join(UpgradeTmpDir, info.FileName)
 	if _, err := os.Stat(zipPath); err != nil {
 		return fmt.Errorf("OTA file not found: %s", zipPath)
 	}
+
+	logger.Info("Opening OTA package from %s", zipPath)
 
 	// Open zip file
 	zipReader, err := zip.OpenReader(zipPath)
@@ -523,6 +543,10 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 	if err := m.switchPartition(); err != nil {
 		return err
 	}
+
+	// Clean up OTA file after successful upgrade
+	logger.Info("Cleaning up OTA file: %s", zipPath)
+	os.Remove(zipPath)
 
 	return nil
 }
@@ -682,24 +706,35 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 
 // downloadFile downloads a file from URL.
 func (m *UpgradeManager) downloadFile(url, destPath string) error {
+	logger.Info("Downloading file from %s", url)
 	resp, err := http.Get(url)
 	if err != nil {
+		logger.Error("HTTP GET failed for %s: %v", url, err)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logger.Error("HTTP error for %s: status=%d", url, resp.StatusCode)
 		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
 	}
 
+	logger.Info("Creating destination file: %s", destPath)
 	out, err := os.Create(destPath)
 	if err != nil {
+		logger.Error("Failed to create file %s: %v", destPath, err)
 		return err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		logger.Error("Failed to write file %s: %v", destPath, err)
+		return err
+	}
+
+	logger.Info("Successfully downloaded %d bytes to %s", written, destPath)
+	return nil
 }
 
 // downloadFileWithProgress downloads a file with progress tracking.

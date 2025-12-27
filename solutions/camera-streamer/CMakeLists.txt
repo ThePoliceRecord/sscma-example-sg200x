@@ -1,0 +1,92 @@
+cmake_minimum_required(VERSION 3.16)
+
+# Include RISC-V toolchain before project()
+get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+include(${REPO_ROOT}/cmake/toolchain-riscv64-linux-musl-x86_64.cmake)
+
+project(camera-streamer C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_STANDARD 11)
+
+# Get SDK path from environment or CMake variable
+if(NOT DEFINED SG200X_SDK_PATH)
+    if(DEFINED ENV{SG200X_SDK_PATH})
+        set(SG200X_SDK_PATH $ENV{SG200X_SDK_PATH})
+    else()
+        # Fallback to temp directory
+        get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+        set(SG200X_SDK_PATH "${REPO_ROOT}/temp/sg2002_recamera_emmc")
+    endif()
+endif()
+
+# Toolchain already set by nix-shell
+message(STATUS "Building camera-streamer standalone")
+message(STATUS "SDK: ${SG200X_SDK_PATH}")
+
+# Component sources
+file(GLOB MONGOOSE_SRC ../../components/mongoose/*.c)
+file(GLOB SOPHGO_COMMON_SRC ../../components/sophgo/common/*.c)
+file(GLOB SOPHGO_VIDEO_SRC ../../components/sophgo/video/src/*.c)
+
+# SDK paths
+set(SDK_INCLUDE ${SG200X_SDK_PATH}/cvi_mpi/include)
+set(SDK_LIB ${SG200X_SDK_PATH}/cvi_mpi/lib)
+
+# Includes
+include_directories(
+    ../../components/mongoose
+    ../../components/sophgo/common
+    ../../components/sophgo/video
+    ../../components/sophgo/video/include
+    ${SDK_INCLUDE}
+    ${SG200X_SDK_PATH}/osdrv/interdrv/include/chip/cv181x/uapi
+    ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi
+    ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi/linux
+    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/cv181x/isp-daemon2/inc
+    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/common/raw_dump/inc
+    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/include/cv181x
+    ${SG200X_SDK_PATH}/cvi_mpi/sample
+)
+
+# Compile definitions
+add_definitions(-D__CV181X__)
+
+# Compiler flags to handle SDK compatibility issues
+add_compile_options(-Wno-error=incompatible-pointer-types -Wno-error=unused-result)
+
+# Link directories
+link_directories(${SDK_LIB})
+
+# Build executable directly
+add_executable(camera-streamer
+    main/main.cpp
+    ../../components/sophgo/video/video.c
+    ${MONGOOSE_SRC}
+    ${SOPHGO_COMMON_SRC}
+    ${SOPHGO_VIDEO_SRC}
+)
+
+# Link SDK libraries (complete set)
+target_link_libraries(camera-streamer
+    # Video subsystem  
+    venc vpss vi vdec vo
+    # ISP and algorithms
+    isp ae awb af
+    isp_algo
+    # System libraries
+    sys cvi_bin cvi_bin_isp
+    # Sensor drivers
+    sns_full
+    # Additional dependencies
+    pthread atomic
+)
+
+# Install
+install(TARGETS camera-streamer RUNTIME DESTINATION /usr/bin)
+
+# Package
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "camera-streamer")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+include(CPack)

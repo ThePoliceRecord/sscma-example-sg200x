@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -573,22 +574,100 @@ func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Starting SD card format")
 
-	// Unmount if currently mounted
-	exec.Command("umount", "/mnt/sd").Run()
+	// SD card root device
+	sdDevice := "/dev/mmcblk1"
 
-	// Format the SD card partition with exfat (vfat for compatibility)
-	if err := exec.Command("mkfs.vfat", "-F", "32", "/dev/mmcblk1p1").Run(); err != nil {
-		logger.Error("Failed to format SD card: %v", err)
-		api.WriteError(w, -1, "Failed to format SD card")
+	// Check if device exists
+	if _, err := os.Stat(sdDevice); err != nil {
+		logger.Error("SD card device %s not found: %v", sdDevice, err)
+		api.WriteError(w, -1, "SD card not detected")
 		return
 	}
 
-	logger.Info("SD card formatted successfully with exFAT")
+	// Unmount any existing mounts first
+	exec.Command("umount", "-f", sdDevice+"p1").Run()
+	exec.Command("umount", "-f", sdDevice).Run()
+	exec.Command("umount", "-f", "/tmp/sd").Run()
+	time.Sleep(500 * time.Millisecond)
 
-	// Remount the SD card
-	os.MkdirAll("/mnt/sd", 0755)
-	if err := exec.Command("mount", "/dev/mmcblk1p1", "/mnt/sd").Run(); err != nil {
-		logger.Warning("SD card formatted but failed to remount: %v", err)
+	// Try to find existing partition
+	cmd := exec.Command("lsblk", "-ln", "-o", "NAME", sdDevice)
+	output, err := cmd.Output()
+	var targetDevice string
+
+	if err == nil {
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		if len(lines) > 1 {
+			// Found partition
+			partName := strings.TrimSpace(lines[1])
+			targetDevice = "/dev/" + partName
+			logger.Info("Found existing partition: %s", targetDevice)
+		}
+	}
+
+	// If no partition found, create one
+	if targetDevice == "" {
+		logger.Info("No partition found, creating partition table on %s", sdDevice)
+
+		// Create MBR partition table with single partition using fdisk
+		// Commands: o (create DOS partition table), n (new partition), p (primary),
+		// 1 (partition number), default start, default end, w (write)
+		fdiskScript := "o\nn\np\n1\n\n\nw\n"
+		fdiskCmd := exec.Command("sh", "-c", fmt.Sprintf("echo -e '%s' | fdisk %s", fdiskScript, sdDevice))
+		fdiskOutput, fdiskErr := fdiskCmd.CombinedOutput()
+		logger.Info("fdisk output: %s", string(fdiskOutput))
+
+		if fdiskErr != nil {
+			logger.Warning("fdisk command had errors: %v, trying partprobe", fdiskErr)
+		}
+
+		// Tell kernel to re-read partition table
+		exec.Command("partprobe", sdDevice).Run()
+
+		// Wait for kernel to recognize new partition
+		time.Sleep(2 * time.Second)
+
+		// Confirm partition was created
+		targetDevice = sdDevice + "p1"
+		if _, err := os.Stat(targetDevice); err != nil {
+			logger.Error("Failed to create partition %s: %v", targetDevice, err)
+			api.WriteError(w, -1, "Failed to create SD card partition")
+			return
+		}
+		logger.Info("Created partition: %s", targetDevice)
+	}
+
+	// Format with exFAT - try without -f first
+	logger.Info("Formatting %s with exFAT (without -f)", targetDevice)
+	cmd = exec.Command("mkfs.exfat", targetDevice)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		logger.Warning("mkfs.exfat without -f failed: %v, output: %s", err, string(output))
+
+		// Try with -f flag
+		logger.Info("Retrying with -f flag")
+		cmd = exec.Command("mkfs.exfat", "-f", targetDevice)
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			logger.Error("mkfs.exfat with -f failed: %v, output: %s", err, string(output))
+			api.WriteError(w, -1, fmt.Sprintf("Failed to format SD card: %s", string(output)))
+			return
+		}
+	}
+
+	logger.Info("SD card formatted successfully with exFAT, output: %s", string(output))
+
+	// Wait before remounting
+	time.Sleep(1 * time.Second)
+
+	// Remount the SD card with explicit filesystem type
+	os.MkdirAll("/tmp/sd", 0755)
+	mountCmd := exec.Command("mount", "-t", "exfat", targetDevice, "/tmp/sd")
+	if mountOutput, err := mountCmd.CombinedOutput(); err != nil {
+		logger.Warning("SD card formatted but failed to remount: %v, output: %s", err, string(mountOutput))
+		// Don't fail the request since format was successful
+	} else {
+		logger.Info("SD card remounted successfully at /tmp/sd")
 	}
 
 	api.WriteSuccess(w, map[string]interface{}{

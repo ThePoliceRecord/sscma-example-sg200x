@@ -10,7 +10,7 @@
 # Description:       WebSocket H.264 camera streaming service for reCamera
 ### END INIT INFO
 
-DAEMON=/usr/bin/camera-streamer
+DAEMON=/usr/local/bin/camera-streamer
 NAME=camera-streamer
 DESC="Camera Streamer Service"
 PIDFILE=/var/run/$NAME.pid

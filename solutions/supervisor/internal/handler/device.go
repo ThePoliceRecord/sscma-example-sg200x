@@ -438,6 +438,8 @@ func (h *DeviceHandler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.Info("API UpdateChannel request: channel=%d, url=%s", req.Channel, req.URL)
+
 	if err := h.upgradeMgr.UpdateChannel(req.Channel, req.URL); err != nil {
 		api.WriteError(w, -1, "Failed to update channel")
 		return

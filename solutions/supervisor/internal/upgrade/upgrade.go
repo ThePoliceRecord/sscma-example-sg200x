@@ -140,6 +140,7 @@ func (m *UpgradeManager) GetChannel() (channel int, url string) {
 
 // UpdateChannel sets the upgrade channel and server URL.
 func (m *UpgradeManager) UpdateChannel(channel int, url string) error {
+	logger.Info("UpdateChannel: channel=%d, url=%s", channel, url)
 	if m.IsUpgrading() {
 		return fmt.Errorf("upgrade in progress")
 	}
@@ -197,10 +198,12 @@ func (m *UpgradeManager) GetSystemUpdateVersion() (*UpdateVersion, error) {
 // QueryLatestVersion queries for the latest version in background.
 func (m *UpgradeManager) QueryLatestVersion() error {
 	channel, customURL := m.GetChannel()
+	logger.Info("QueryLatestVersion: channel=%d, customURL=%s", channel, customURL)
 
 	var checksumURL string
-	if channel != 0 && customURL != "" {
+	if customURL != "" {
 		checksumURL = customURL
+		logger.Info("Using custom URL: %s", checksumURL)
 	} else {
 		// Parse GitHub releases URL
 		url, err := m.parseGitHubReleasesURL(OfficialURL)
@@ -212,6 +215,7 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 			}
 		}
 		checksumURL = url
+		logger.Info("Using official URL: %s", checksumURL)
 	}
 
 	// Download Checksum file

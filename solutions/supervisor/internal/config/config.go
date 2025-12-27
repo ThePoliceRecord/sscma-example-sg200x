@@ -13,10 +13,20 @@ import (
 // Config holds all configuration for the supervisor.
 type Config struct {
 	// Server settings
-	HTTPPort   string
-	HTTPSPort  string
+	HTTPPort   string // Optional HTTP port (for redirect to HTTPS only)
+	HTTPSPort  string // HTTPS port (required)
 	RootDir    string
 	ScriptPath string
+
+	// TLS settings
+	CertDir string // Directory for TLS certificates
+
+	// Certificate subject fields
+	CertOrganization string // Organization name for certificate
+	CertCountry      string // Country code (e.g., "US", "CN")
+	CertProvince     string // State/Province
+	CertLocality     string // City/Locality
+	CertIssuer       string // Issuer organization name
 
 	// Security settings
 	NoAuth              bool
@@ -54,10 +64,17 @@ var (
 // DefaultConfig returns a new Config with default values.
 func DefaultConfig() *Config {
 	return &Config{
-		HTTPPort:   "80",
-		HTTPSPort:  "",
+		HTTPPort:   "80",  // HTTP for redirect only
+		HTTPSPort:  "443", // HTTPS is required
 		RootDir:    "/usr/share/supervisor/www/",
 		ScriptPath: "/usr/share/supervisor/scripts/main.sh",
+
+		CertDir:          "/etc/recamera.conf/certs",
+		CertOrganization: "Seeed Studio",
+		CertCountry:      "CN",
+		CertProvince:     "Guangdong",
+		CertLocality:     "Shenzhen",
+		CertIssuer:       "Seeed Studio",
 
 		NoAuth:              false,
 		JWTSecret:           nil, // Will be generated
@@ -100,6 +117,24 @@ func (c *Config) loadFromEnv() {
 	}
 	if script := os.Getenv("SUPERVISOR_SCRIPT_PATH"); script != "" {
 		c.ScriptPath = script
+	}
+	if certDir := os.Getenv("SUPERVISOR_CERT_DIR"); certDir != "" {
+		c.CertDir = certDir
+	}
+	if org := os.Getenv("SUPERVISOR_CERT_ORG"); org != "" {
+		c.CertOrganization = org
+	}
+	if country := os.Getenv("SUPERVISOR_CERT_COUNTRY"); country != "" {
+		c.CertCountry = country
+	}
+	if province := os.Getenv("SUPERVISOR_CERT_PROVINCE"); province != "" {
+		c.CertProvince = province
+	}
+	if locality := os.Getenv("SUPERVISOR_CERT_LOCALITY"); locality != "" {
+		c.CertLocality = locality
+	}
+	if issuer := os.Getenv("SUPERVISOR_CERT_ISSUER"); issuer != "" {
+		c.CertIssuer = issuer
 	}
 	if noAuth := os.Getenv("SUPERVISOR_NO_AUTH"); noAuth == "true" || noAuth == "1" {
 		c.NoAuth = true

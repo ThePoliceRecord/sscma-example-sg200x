@@ -22,6 +22,7 @@ const channelList = [
   { label: "Seeed-Official", value: DeviceChannleMode.Official },
 ];
 const infoList = [
+  { label: "Serial Number", key: "sn" },
   { label: "CPU", key: "cpu" },
   { label: "RAM", key: "ram" },
   { label: "NPU", key: "npu" },

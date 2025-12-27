@@ -576,8 +576,8 @@ func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
 	// Unmount if currently mounted
 	exec.Command("umount", "/mnt/sd").Run()
 
-	// Format the SD card partition with exfat (vfat for compatibility)
-	if err := exec.Command("mkfs.vfat", "-F", "32", "/dev/mmcblk1p1").Run(); err != nil {
+	// Format the SD card partition with exFAT
+	if err := exec.Command("mkfs.exfat", "/dev/mmcblk1p1").Run(); err != nil {
 		logger.Error("Failed to format SD card: %v", err)
 		api.WriteError(w, -1, "Failed to format SD card")
 		return

@@ -103,20 +103,20 @@ func (h *DeviceHandler) UpdateDeviceName(w http.ResponseWriter, r *http.Request)
 	api.WriteSuccess(w, map[string]interface{}{"deviceName": req.DeviceName})
 }
 
-// GetCameraWebsocketUrl returns the camera WebSocket URL.
+// GetCameraWebsocketUrl returns the camera WebSocket URL (proxied through supervisor).
 func (h *DeviceHandler) GetCameraWebsocketUrl(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
+
+	// Determine protocol based on request scheme
+	// Return supervisor's WebSocket proxy endpoint (always uses same protocol as page)
+	protocol := "ws://"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		protocol = "wss://"
 	}
 
-	// Get port from query or use default
-	port := r.URL.Query().Get("port")
-	if port == "" {
-		port = "8765"
-	}
-
-	wsURL := "ws://" + host + ":" + port
+	// Return supervisor's camera proxy endpoint (not direct camera-streamer)
+	// Supervisor will relay to ws://localhost:8765
+	wsURL := protocol + host + "/ws/camera"
 	api.WriteSuccess(w, map[string]interface{}{"websocketUrl": wsURL})
 }
 

@@ -61,16 +61,22 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to get TLS config: %w", err)
 	}
 
-	mux := s.setupRoutes()
+	apiMux := s.setupRoutes()
 
-	// Apply middleware
-	handler := middleware.Chain(
-		mux,
+	// Create top-level mux that routes WebSocket directly (bypass middleware)
+	rootMux := http.NewServeMux()
+
+	// WebSocket camera proxy - direct connection (no middleware)
+	rootMux.HandleFunc("/ws/camera", handler.CameraWebSocketProxy)
+
+	// All other routes go through middleware
+	rootMux.Handle("/", middleware.Chain(
+		apiMux,
 		middleware.Recovery,
 		middleware.SecureHeaders,
 		middleware.Logging,
 		middleware.CORS,
-	)
+	))
 
 	// HTTP server - redirects all traffic to HTTPS
 	if s.cfg.HTTPPort != "" {
@@ -90,10 +96,10 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// HTTPS server (required)
+	// HTTPS server (required) - use rootMux instead of wrapped handler
 	s.httpsServer = &http.Server{
 		Addr:         ":" + s.cfg.HTTPSPort,
-		Handler:      handler,
+		Handler:      rootMux,
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,

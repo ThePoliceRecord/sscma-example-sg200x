@@ -1,14 +1,27 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"supervisor/pkg/logger"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
+	// Optimize buffer sizes for video streaming
+	ReadBufferSize:  64 * 1024,
+	WriteBufferSize: 64 * 1024,
+}
+
+// Buffer pool for zero-copy transfers
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 64*1024)
+		return &buf
+	},
 }
 
 // CameraWebSocketProxy proxies WebSocket connections from browser (WSS) to camera-streamer (WS)
@@ -34,36 +47,47 @@ func CameraWebSocketProxy(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("WebSocket proxy established")
 
-	// Bidirectional relay
+	// Bidirectional relay with zero-copy optimization
 	done := make(chan struct{}, 2)
 
-	// Camera -> Browser
+	// Camera -> Browser (optimized for binary frames)
 	go func() {
 		defer func() { done <- struct{}{} }()
+		buf := bufferPool.Get().(*[]byte)
+		defer bufferPool.Put(buf)
+
 		for {
-			messageType, message, err := cameraConn.ReadMessage()
+			messageType, reader, err := cameraConn.NextReader()
 			if err != nil {
-				// Normal close, don't log as error
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
 					return
 				}
 				logger.Warning("Camera read error: %v", err)
 				return
 			}
-			if err := browserConn.WriteMessage(messageType, message); err != nil {
-				// Browser disconnected, normal
+
+			// Get writer for browser
+			writer, err := browserConn.NextWriter(messageType)
+			if err != nil {
+				return
+			}
+
+			// Zero-copy transfer using pooled buffer
+			_, err = io.CopyBuffer(writer, reader, *buf)
+			writer.Close()
+
+			if err != nil {
 				return
 			}
 		}
 	}()
 
-	// Browser -> Camera
+	// Browser -> Camera (control messages, typically small)
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
 			messageType, message, err := browserConn.ReadMessage()
 			if err != nil {
-				// Normal close
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
 					return
 				}

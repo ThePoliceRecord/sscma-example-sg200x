@@ -4,7 +4,7 @@ package upgrade
 import (
 	"archive/zip"
 	"bufio"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,10 +24,10 @@ import (
 
 // URLs and file paths
 const (
-	OfficialURL  = "https://github.com/Seeed-Studio/reCamera-OS/releases/latest"
-	OfficialURL2 = "https://files.seeedstudio.com/reCamera"
-	MD5FileName  = "sg2002_recamera_emmc_md5sum.txt"
-	URLFileName  = "url.txt"
+	OfficialURL      = "https://github.com/Seeed-Studio/reCamera-OS/releases/latest"
+	OfficialURL2     = "https://files.seeedstudio.com/reCamera"
+	ChecksumFileName = "sg2002_recamera_emmc_sha256sum.txt"
+	URLFileName      = "url.txt"
 
 	DefaultUpgradeURL = "https://github.com/Seeed-Studio/reCamera-OS/releases/latest"
 )
@@ -82,10 +82,10 @@ type UpdateProgress struct {
 	Status   string `json:"status"` // download, upgrade, idle, cancelled
 }
 
-// VersionInfo from MD5 file
+// VersionInfo from Checksum file
 type VersionInfo struct {
 	FileName string
-	MD5Sum   string
+	Checksum string
 	OSName   string
 	Version  string
 }
@@ -198,9 +198,9 @@ func (m *UpgradeManager) GetSystemUpdateVersion() (*UpdateVersion, error) {
 func (m *UpgradeManager) QueryLatestVersion() error {
 	channel, customURL := m.GetChannel()
 
-	var md5URL string
+	var checksumURL string
 	if channel != 0 && customURL != "" {
-		md5URL = customURL
+		checksumURL = customURL
 	} else {
 		// Parse GitHub releases URL
 		url, err := m.parseGitHubReleasesURL(OfficialURL)
@@ -211,17 +211,17 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 				return err
 			}
 		}
-		md5URL = url
+		checksumURL = url
 	}
 
-	// Download MD5 file
-	md5Path := filepath.Join(UpgradeFilesDir, MD5FileName)
-	if err := m.downloadFile(md5URL, md5Path); err != nil {
+	// Download Checksum file
+	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
+	if err := m.downloadFile(checksumURL, checksumPath); err != nil {
 		return err
 	}
 
 	// Parse version info
-	info, err := m.parseVersionInfo(md5Path)
+	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
 		return err
 	}
@@ -237,13 +237,13 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 	os.WriteFile(versionFile, data, 0644)
 
 	// Save URL for download
-	baseURL := strings.TrimSuffix(md5URL, "/"+MD5FileName)
+	baseURL := strings.TrimSuffix(checksumURL, "/"+ChecksumFileName)
 	os.WriteFile(filepath.Join(UpgradeFilesDir, URLFileName), []byte(baseURL), 0644)
 
 	return nil
 }
 
-// parseGitHubReleasesURL parses GitHub releases URL to get MD5 file URL.
+// parseGitHubReleasesURL parses GitHub releases URL to get Checksum file URL.
 func (m *UpgradeManager) parseGitHubReleasesURL(url string) (string, error) {
 	client := &http.Client{
 		Timeout: 60 * time.Second,
@@ -267,7 +267,7 @@ func (m *UpgradeManager) parseGitHubReleasesURL(url string) (string, error) {
 	// Convert tag URL to download URL
 	// https://github.com/.../releases/tag/v1.0.0 -> https://github.com/.../releases/download/v1.0.0
 	location = strings.Replace(location, "/tag/", "/download/", 1)
-	return location + "/" + MD5FileName, nil
+	return location + "/" + ChecksumFileName, nil
 }
 
 // getSeeedLatestURL gets the latest version URL from Seeed server.
@@ -289,25 +289,25 @@ func (m *UpgradeManager) getSeeedLatestURL() (string, error) {
 		return "", fmt.Errorf("empty version from Seeed server")
 	}
 
-	return OfficialURL2 + "/" + version + "/" + MD5FileName, nil
+	return OfficialURL2 + "/" + version + "/" + ChecksumFileName, nil
 }
 
-// parseVersionInfo parses the MD5 file to extract version information.
-func (m *UpgradeManager) parseVersionInfo(md5Path string) (*VersionInfo, error) {
-	data, err := os.ReadFile(md5Path)
+// parseVersionInfo parses the Checksum file to extract version information.
+func (m *UpgradeManager) parseVersionInfo(checksumPath string) (*VersionInfo, error) {
+	data, err := os.ReadFile(checksumPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse line: <md5sum>  <filename>_<os>_<version>_ota.zip
-	re := regexp.MustCompile(`([a-f0-9]+)\s+(\S+ota\.zip)`)
+	// Parse line: <sha256sum>  <filename>_<os>_<version>_ota.zip
+	re := regexp.MustCompile(`([a-f0-9]{64})\s+(\S+ota\.zip)`)
 	matches := re.FindStringSubmatch(string(data))
 	if len(matches) < 3 {
-		return nil, fmt.Errorf("invalid MD5 file format")
+		return nil, fmt.Errorf("invalid Checksum file format")
 	}
 
 	info := &VersionInfo{
-		MD5Sum:   matches[1],
+		Checksum: matches[1],
 		FileName: matches[2],
 	}
 
@@ -409,14 +409,14 @@ func (m *UpgradeManager) downloadOTA() error {
 	defer m.unmountRecovery()
 
 	// Get version info
-	md5Path := filepath.Join(UpgradeFilesDir, MD5FileName)
-	info, err := m.parseVersionInfo(md5Path)
+	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
+	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
 		// Try to query latest first
 		if err := m.QueryLatestVersion(); err != nil {
 			return err
 		}
-		info, err = m.parseVersionInfo(md5Path)
+		info, err = m.parseVersionInfo(checksumPath)
 		if err != nil {
 			return err
 		}
@@ -436,8 +436,8 @@ func (m *UpgradeManager) downloadOTA() error {
 		return err
 	}
 
-	// Verify MD5
-	if err := m.verifyMD5(tmpPath, info.MD5Sum); err != nil {
+	// Verify Checksum
+	if err := m.verifyChecksum(tmpPath, info.Checksum); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
@@ -448,8 +448,8 @@ func (m *UpgradeManager) downloadOTA() error {
 		return err
 	}
 
-	// Copy MD5 file
-	copyFile(md5Path, filepath.Join(m.mountPath, MD5FileName))
+	// Copy Checksum file
+	copyFile(checksumPath, filepath.Join(m.mountPath, ChecksumFileName))
 
 	// Clean temp
 	os.Remove(tmpPath)
@@ -466,8 +466,8 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 	defer m.unmountRecovery()
 
 	// Find OTA file
-	md5Path := filepath.Join(m.mountPath, MD5FileName)
-	info, err := m.parseVersionInfo(md5Path)
+	checksumPath := filepath.Join(m.mountPath, ChecksumFileName)
+	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
 		return err
 	}
@@ -484,21 +484,21 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 	}
 	defer zipReader.Close()
 
-	// Read MD5 sums from zip
-	md5Map, err := m.readZipMD5(zipReader)
+	// Read Checksum sums from zip
+	checksumMap, err := m.readZipChecksum(zipReader)
 	if err != nil {
 		return err
 	}
 
 	// Update FIP partition
 	m.updateProgress(55, "upgrade")
-	if err := m.updatePartition(zipReader, FIPPart, "fip.bin", md5Map, true); err != nil {
+	if err := m.updatePartition(zipReader, FIPPart, "fip.bin", checksumMap, true); err != nil {
 		logger.Warning("FIP update skipped: %v", err)
 	}
 
 	// Update boot partition
 	m.updateProgress(60, "upgrade")
-	if err := m.updatePartition(zipReader, BootPart, "boot.emmc", md5Map, false); err != nil {
+	if err := m.updatePartition(zipReader, BootPart, "boot.emmc", checksumMap, false); err != nil {
 		logger.Warning("Boot update skipped: %v", err)
 	}
 
@@ -510,7 +510,7 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 
 	// Update rootfs
 	m.updateProgress(65, "upgrade")
-	if err := m.updatePartition(zipReader, targetRootFS, "rootfs_ext4.emmc", md5Map, false); err != nil {
+	if err := m.updatePartition(zipReader, targetRootFS, "rootfs_ext4.emmc", checksumMap, false); err != nil {
 		return fmt.Errorf("rootfs update failed: %v", err)
 	}
 
@@ -591,12 +591,12 @@ func (m *UpgradeManager) switchPartition() error {
 	return nil
 }
 
-// readZipMD5 reads MD5 sums from md5sum.txt inside the zip.
-func (m *UpgradeManager) readZipMD5(zipReader *zip.ReadCloser) (map[string]string, error) {
-	md5Map := make(map[string]string)
+// readZipChecksum reads SHA256 sums from sha256sum.txt inside the zip.
+func (m *UpgradeManager) readZipChecksum(zipReader *zip.ReadCloser) (map[string]string, error) {
+	checksumMap := make(map[string]string)
 
 	for _, f := range zipReader.File {
-		if f.Name == "md5sum.txt" {
+		if f.Name == "sha256sum.txt" {
 			rc, err := f.Open()
 			if err != nil {
 				return nil, err
@@ -607,18 +607,18 @@ func (m *UpgradeManager) readZipMD5(zipReader *zip.ReadCloser) (map[string]strin
 			for scanner.Scan() {
 				fields := strings.Fields(scanner.Text())
 				if len(fields) >= 2 {
-					md5Map[fields[1]] = fields[0]
+					checksumMap[fields[1]] = fields[0]
 				}
 			}
 			break
 		}
 	}
 
-	return md5Map, nil
+	return checksumMap, nil
 }
 
 // updatePartition updates a partition from the zip file.
-func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, filename string, md5Map map[string]string, isFIP bool) error {
+func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, filename string, checksumMap map[string]string, isFIP bool) error {
 	// Find file in zip
 	var zipFile *zip.File
 	for _, f := range zipReader.File {
@@ -631,9 +631,9 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 		return fmt.Errorf("file not found in zip: %s", filename)
 	}
 
-	expectedMD5 := md5Map[filename]
-	if expectedMD5 == "" {
-		return fmt.Errorf("no MD5 for: %s", filename)
+	expectedChecksum := checksumMap[filename]
+	if expectedChecksum == "" {
+		return fmt.Errorf("no Checksum for: %s", filename)
 	}
 
 	// For FIP partition, we need to disable write protection
@@ -656,8 +656,8 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 	}
 	defer part.Close()
 
-	// Create MD5 hash writer
-	hash := md5.New()
+	// Create SHA256 hash writer
+	hash := sha256.New()
 	writer := io.MultiWriter(part, hash)
 
 	// Copy data
@@ -666,10 +666,10 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 		return err
 	}
 
-	// Verify MD5
-	actualMD5 := hex.EncodeToString(hash.Sum(nil))
-	if actualMD5 != expectedMD5 {
-		return fmt.Errorf("MD5 mismatch for %s: expected %s, got %s", filename, expectedMD5, actualMD5)
+	// Verify Checksum
+	actualChecksum := hex.EncodeToString(hash.Sum(nil))
+	if actualChecksum != expectedChecksum {
+		return fmt.Errorf("Checksum mismatch for %s: expected %s, got %s", filename, expectedChecksum, actualChecksum)
 	}
 
 	logger.Info("Updated %s with %s (%d bytes)", partition, filename, written)
@@ -745,22 +745,22 @@ func (m *UpgradeManager) downloadFileWithProgress(url, destPath string, progress
 	return nil
 }
 
-// verifyMD5 verifies the MD5 checksum of a file.
-func (m *UpgradeManager) verifyMD5(filePath, expectedMD5 string) error {
+// verifyChecksum verifies the SHA256 checksum of a file.
+func (m *UpgradeManager) verifyChecksum(filePath, expectedChecksum string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	hash := md5.New()
+	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return err
 	}
 
-	actualMD5 := hex.EncodeToString(hash.Sum(nil))
-	if actualMD5 != expectedMD5 {
-		return fmt.Errorf("MD5 mismatch: expected %s, got %s", expectedMD5, actualMD5)
+	actualChecksum := hex.EncodeToString(hash.Sum(nil))
+	if actualChecksum != expectedChecksum {
+		return fmt.Errorf("Checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
 	}
 
 	return nil

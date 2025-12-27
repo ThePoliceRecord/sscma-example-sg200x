@@ -158,3 +158,13 @@ export const factoryResetApi = async () =>
     url: "api/deviceMgr/factoryReset",
     method: "post",
   });
+
+// Format SD card - formats the SD card with ext4
+export const formatSDCardApi = async () =>
+  supervisorRequest<{
+    status: string;
+    message: string;
+  }>({
+    url: "api/deviceMgr/formatSDCard",
+    method: "post",
+  });

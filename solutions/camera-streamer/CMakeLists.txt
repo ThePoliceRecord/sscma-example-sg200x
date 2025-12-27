@@ -14,21 +14,30 @@ set(CMAKE_C_STANDARD 11)
 # Determine SDK paths based on build environment
 if(DEFINED SYSROOT)
     # Buildroot environment - SDK headers/libs are in sysroot AND output dirs
-    message(STATUS "Building in Buildroot environment with SYSROOT: ${SYSROOT}")
+    message(STATUS "============ BUILDROOT MODE ============")
+    message(STATUS "SYSROOT: ${SYSROOT}")
     set(SDK_INCLUDE ${SYSROOT}/usr/include)
     set(SDK_LIB ${SYSROOT}/usr/lib)
     
     # CVI SDK headers are in output directory (passed via SG200X_SDK_PATH)
     if(DEFINED SG200X_SDK_PATH)
-        message(STATUS "Using CVI SDK from: ${SG200X_SDK_PATH}")
+        message(STATUS "SG200X_SDK_PATH provided: ${SG200X_SDK_PATH}")
+        get_filename_component(SDK_PATH_ABS "${SG200X_SDK_PATH}" ABSOLUTE)
+        message(STATUS "SG200X_SDK_PATH absolute: ${SDK_PATH_ABS}")
+        message(STATUS "Looking for headers at: ${SDK_PATH_ABS}/cvi_mpi/include")
+        message(STATUS "Looking for headers at: ${SDK_PATH_ABS}/osdrv/interdrv/include/common/uapi/linux")
+        
         include_directories(
-            ${SG200X_SDK_PATH}/cvi_mpi/include
-            ${SG200X_SDK_PATH}/osdrv/interdrv/include/chip/cv181x/uapi
-            ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi
-            ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi/linux
+            ${SDK_PATH_ABS}/cvi_mpi/include
+            ${SDK_PATH_ABS}/osdrv/interdrv/include/chip/cv181x/uapi
+            ${SDK_PATH_ABS}/osdrv/interdrv/include/common/uapi
+            ${SDK_PATH_ABS}/osdrv/interdrv/include/common/uapi/linux
         )
-        link_directories(${SG200X_SDK_PATH}/cvi_mpi/lib)
+        link_directories(${SDK_PATH_ABS}/cvi_mpi/lib)
+    else()
+        message(WARNING "SG200X_SDK_PATH not provided in Buildroot mode!")
     endif()
+    message(STATUS "=========================================")
 else()
     # Standalone build - use SG200X_SDK_PATH
     if(NOT DEFINED SG200X_SDK_PATH)

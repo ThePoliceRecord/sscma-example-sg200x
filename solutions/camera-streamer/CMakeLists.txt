@@ -15,6 +15,11 @@ set(CMAKE_C_STANDARD 11)
 if(DEFINED SYSROOT)
     # Buildroot environment - SDK headers/libs are in sysroot AND output dirs
     message(STATUS "============ BUILDROOT MODE ============")
+    
+    # Allow CMake to search outside sysroot for SDK headers
+    set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
+    set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
+    
     message(STATUS "SYSROOT: ${SYSROOT}")
     set(SDK_INCLUDE ${SYSROOT}/usr/include)
     set(SDK_LIB ${SYSROOT}/usr/lib)

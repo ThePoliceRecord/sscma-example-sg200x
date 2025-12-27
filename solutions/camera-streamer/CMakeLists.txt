@@ -1,52 +1,70 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Include RISC-V toolchain before project()
-get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-include(${REPO_ROOT}/cmake/toolchain-riscv64-linux-musl-x86_64.cmake)
+# Include RISC-V toolchain before project() only if not in Buildroot
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+    include(${REPO_ROOT}/cmake/toolchain-riscv64-linux-musl-x86_64.cmake)
+endif()
 
 project(camera-streamer C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
 
-# Get SDK path from environment or CMake variable
-if(NOT DEFINED SG200X_SDK_PATH)
-    if(DEFINED ENV{SG200X_SDK_PATH})
-        set(SG200X_SDK_PATH $ENV{SG200X_SDK_PATH})
-    else()
-        # Fallback to temp directory
-        get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-        set(SG200X_SDK_PATH "${REPO_ROOT}/temp/sg2002_recamera_emmc")
+# Determine SDK paths based on build environment
+if(DEFINED SYSROOT)
+    # Buildroot environment - SDK headers/libs are in sysroot
+    message(STATUS "Building in Buildroot environment with SYSROOT: ${SYSROOT}")
+    set(SDK_INCLUDE ${SYSROOT}/usr/include)
+    set(SDK_LIB ${SYSROOT}/usr/lib)
+    
+    # Additional CVI-specific include paths in staging
+    include_directories(
+        ${SYSROOT}/usr/include/cvi
+        ${SYSROOT}/usr/include/linux
+    )
+else()
+    # Standalone build - use SG200X_SDK_PATH
+    if(NOT DEFINED SG200X_SDK_PATH)
+        if(DEFINED ENV{SG200X_SDK_PATH})
+            set(SG200X_SDK_PATH $ENV{SG200X_SDK_PATH})
+        else()
+            # Fallback to temp directory
+            get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+            set(SG200X_SDK_PATH "${REPO_ROOT}/temp/sg2002_recamera_emmc")
+        endif()
     endif()
+    
+    message(STATUS "Building camera-streamer standalone")
+    message(STATUS "SDK: ${SG200X_SDK_PATH}")
+    
+    set(SDK_INCLUDE ${SG200X_SDK_PATH}/cvi_mpi/include)
+    set(SDK_LIB ${SG200X_SDK_PATH}/cvi_mpi/lib)
+    
+    # Additional include paths for standalone
+    include_directories(
+        ${SG200X_SDK_PATH}/osdrv/interdrv/include/chip/cv181x/uapi
+        ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi
+        ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi/linux
+        ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/cv181x/isp-daemon2/inc
+        ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/common/raw_dump/inc
+        ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/include/cv181x
+        ${SG200X_SDK_PATH}/cvi_mpi/sample
+    )
 endif()
-
-# Toolchain already set by nix-shell
-message(STATUS "Building camera-streamer standalone")
-message(STATUS "SDK: ${SG200X_SDK_PATH}")
 
 # Component sources
 file(GLOB MONGOOSE_SRC ../../components/mongoose/*.c)
 file(GLOB SOPHGO_COMMON_SRC ../../components/sophgo/common/*.c)
 file(GLOB SOPHGO_VIDEO_SRC ../../components/sophgo/video/src/*.c)
 
-# SDK paths
-set(SDK_INCLUDE ${SG200X_SDK_PATH}/cvi_mpi/include)
-set(SDK_LIB ${SG200X_SDK_PATH}/cvi_mpi/lib)
-
-# Includes
+# Common includes
 include_directories(
     ../../components/mongoose
     ../../components/sophgo/common
     ../../components/sophgo/video
     ../../components/sophgo/video/include
     ${SDK_INCLUDE}
-    ${SG200X_SDK_PATH}/osdrv/interdrv/include/chip/cv181x/uapi
-    ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi
-    ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi/linux
-    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/cv181x/isp-daemon2/inc
-    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/common/raw_dump/inc
-    ${SG200X_SDK_PATH}/cvi_mpi/modules/isp/include/cv181x
-    ${SG200X_SDK_PATH}/cvi_mpi/sample
 )
 
 # Compile definitions

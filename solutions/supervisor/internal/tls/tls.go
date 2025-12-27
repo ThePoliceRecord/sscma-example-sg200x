@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"supervisor/pkg/logger"
@@ -31,16 +32,30 @@ const (
 
 	// CertValidityDays is the number of days the certificate is valid
 	CertValidityDays = 3650 // 10 years
+
+	// DeviceNameFile is the file containing the device name
+	DeviceNameFile = "/etc/recamera.conf/device_name"
 )
+
+// CertSubject holds certificate subject information.
+type CertSubject struct {
+	Organization string
+	Country      string
+	Province     string
+	Locality     string
+	CommonName   string // If empty, reads from device name file
+	Issuer       string // Issuer organization (for display/logging)
+}
 
 // Manager handles TLS certificate operations.
 type Manager struct {
 	certDir  string
 	certFile string
 	keyFile  string
+	subject  CertSubject
 }
 
-// NewManager creates a new TLS manager.
+// NewManager creates a new TLS manager with default subject.
 func NewManager(certDir string) *Manager {
 	if certDir == "" {
 		certDir = DefaultCertDir
@@ -49,6 +64,26 @@ func NewManager(certDir string) *Manager {
 		certDir:  certDir,
 		certFile: filepath.Join(certDir, CertFileName),
 		keyFile:  filepath.Join(certDir, KeyFileName),
+		subject: CertSubject{
+			Organization: "Seeed Studio",
+			Country:      "CN",
+			Province:     "Guangdong",
+			Locality:     "Shenzhen",
+			Issuer:       "Seeed Studio",
+		},
+	}
+}
+
+// NewManagerWithSubject creates a new TLS manager with custom subject information.
+func NewManagerWithSubject(certDir string, subject CertSubject) *Manager {
+	if certDir == "" {
+		certDir = DefaultCertDir
+	}
+	return &Manager{
+		certDir:  certDir,
+		certFile: filepath.Join(certDir, CertFileName),
+		keyFile:  filepath.Join(certDir, KeyFileName),
+		subject:  subject,
 	}
 }
 
@@ -102,6 +137,20 @@ func (m *Manager) certificatesValid() bool {
 	return time.Now().Add(30 * 24 * time.Hour).Before(cert.NotAfter)
 }
 
+// getDeviceName reads the device name from the config file.
+func (m *Manager) getDeviceName() string {
+	data, err := os.ReadFile(DeviceNameFile)
+	if err != nil {
+		logger.Warning("Failed to read device name: %v, using default", err)
+		return "reCamera"
+	}
+	name := strings.TrimSpace(string(data))
+	if name == "" {
+		return "reCamera"
+	}
+	return name
+}
+
 // generateCertificates generates a new self-signed certificate and private key.
 func (m *Manager) generateCertificates() error {
 	// Generate private key using ECDSA P-384 (stronger than P-256)
@@ -119,18 +168,40 @@ func (m *Manager) generateCertificates() error {
 	// Get all local IP addresses for SANs
 	ipAddresses := getLocalIPAddresses()
 
+	// Determine CommonName (use device name if not set)
+	commonName := m.subject.CommonName
+	if commonName == "" {
+		commonName = m.getDeviceName()
+	}
+
+	// Build Subject DN
+	subject := pkix.Name{
+		CommonName: commonName,
+	}
+	if m.subject.Organization != "" {
+		subject.Organization = []string{m.subject.Organization}
+	}
+	if m.subject.Country != "" {
+		subject.Country = []string{m.subject.Country}
+	}
+	if m.subject.Province != "" {
+		subject.Province = []string{m.subject.Province}
+	}
+	if m.subject.Locality != "" {
+		subject.Locality = []string{m.subject.Locality}
+	}
+
+	// Build Issuer DN (same as subject for self-signed, but can customize org)
+	issuer := subject
+	if m.subject.Issuer != "" {
+		issuer.Organization = []string{m.subject.Issuer}
+	}
+
 	// Certificate template with strong signature algorithm (SHA-384)
 	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization:  []string{"reCamera"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{""},
-			StreetAddress: []string{""},
-			PostalCode:    []string{""},
-			CommonName:    "reCamera Supervisor",
-		},
+		SerialNumber:          serialNumber,
+		Subject:               subject,
+		Issuer:                issuer,
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(0, 0, CertValidityDays),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
@@ -142,7 +213,7 @@ func (m *Manager) generateCertificates() error {
 		SignatureAlgorithm: x509.ECDSAWithSHA384,
 
 		// Subject Alternative Names
-		DNSNames:    []string{"localhost", "recamera", "recamera.local"},
+		DNSNames:    []string{"localhost", "recamera", "recamera.local", commonName},
 		IPAddresses: ipAddresses,
 	}
 
@@ -180,6 +251,8 @@ func (m *Manager) generateCertificates() error {
 	}
 
 	logger.Info("TLS certificates generated successfully (ECDSA P-384 + SHA-384)")
+	logger.Info("  Subject: CN=%s, O=%s, L=%s, ST=%s, C=%s",
+		commonName, m.subject.Organization, m.subject.Locality, m.subject.Province, m.subject.Country)
 	logger.Info("  Certificate: %s", m.certFile)
 	logger.Info("  Private Key: %s", m.keyFile)
 

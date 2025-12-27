@@ -31,10 +31,20 @@ type Server struct {
 
 // New creates a new Server.
 func New(cfg *config.Config) *Server {
+	// Build certificate subject from config
+	certSubject := tls.CertSubject{
+		Organization: cfg.CertOrganization,
+		Country:      cfg.CertCountry,
+		Province:     cfg.CertProvince,
+		Locality:     cfg.CertLocality,
+		Issuer:       cfg.CertIssuer,
+		// CommonName is left empty to use device name from file
+	}
+
 	return &Server{
 		cfg:         cfg,
 		authManager: auth.NewAuthManager(cfg),
-		tlsManager:  tls.NewManager(cfg.CertDir),
+		tlsManager:  tls.NewManagerWithSubject(cfg.CertDir, certSubject),
 	}
 }
 

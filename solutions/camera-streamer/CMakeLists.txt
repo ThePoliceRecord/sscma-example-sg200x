@@ -34,6 +34,7 @@ if(DEFINED SYSROOT)
         
         include_directories(
             ${SDK_PATH_ABS}/cvi_mpi/include
+            ${SDK_PATH_ABS}/cvi_mpi/include/isp/cv181x
             ${SDK_PATH_ABS}/osdrv/interdrv/include/chip/cv181x/uapi
             ${SDK_PATH_ABS}/osdrv/interdrv/include/common/uapi
             ${SDK_PATH_ABS}/osdrv/interdrv/include/common/uapi/linux

@@ -13,16 +13,22 @@ set(CMAKE_C_STANDARD 11)
 
 # Determine SDK paths based on build environment
 if(DEFINED SYSROOT)
-    # Buildroot environment - SDK headers/libs are in sysroot
+    # Buildroot environment - SDK headers/libs are in sysroot AND output dirs
     message(STATUS "Building in Buildroot environment with SYSROOT: ${SYSROOT}")
     set(SDK_INCLUDE ${SYSROOT}/usr/include)
     set(SDK_LIB ${SYSROOT}/usr/lib)
     
-    # Additional CVI-specific include paths in staging
-    include_directories(
-        ${SYSROOT}/usr/include/cvi
-        ${SYSROOT}/usr/include/linux
-    )
+    # CVI SDK headers are in output directory (passed via SG200X_SDK_PATH)
+    if(DEFINED SG200X_SDK_PATH)
+        message(STATUS "Using CVI SDK from: ${SG200X_SDK_PATH}")
+        include_directories(
+            ${SG200X_SDK_PATH}/cvi_mpi/include
+            ${SG200X_SDK_PATH}/osdrv/interdrv/include/chip/cv181x/uapi
+            ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi
+            ${SG200X_SDK_PATH}/osdrv/interdrv/include/common/uapi/linux
+        )
+        link_directories(${SG200X_SDK_PATH}/cvi_mpi/lib)
+    endif()
 else()
     # Standalone build - use SG200X_SDK_PATH
     if(NOT DEFINED SG200X_SDK_PATH)

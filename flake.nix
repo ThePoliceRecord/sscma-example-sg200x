@@ -97,11 +97,13 @@
             '' else ''
               echo "⚠ No SDK found"
               echo ""
-              echo "Build SDK first:"
+              echo "Build SDK first from main project:"
+              echo "  cd ../../  # Back to authority-alert root"
+              echo "  nix run .#build"
+              echo ""
+              echo "Or build in reCamera-OS directly:"
               echo "  cd ../reCamera-OS"
-              echo "  nix develop"
-              echo "  # OR:"
-              echo "  bash docker_build.sh ${buildTarget}"
+              echo "  nix develop  # Then run docker_build.sh"
             ''}
 
             echo ""

@@ -18,30 +18,12 @@
         "type": "github"
       }
     },
-    "host-tools": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1758887931,
-        "narHash": "sha256-OARUHjWRIcsKo0LVm1T4/CBaf2Lis3YKO9ZXfC5KD8E=",
-        "owner": "sophgo",
-        "repo": "host-tools",
-        "rev": "103c66f126fa98fcaa8b54f37fa06f6b293fd074",
-        "type": "github"
-      },
-      "original": {
-        "owner": "sophgo",
-        "repo": "host-tools",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1766651565,
+        "lastModified": 0,
         "narHash": "sha256-QEhk0eXgyIqTpJ/ehZKg9IKS7EtlWxF3N7DXy42zPfU=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "3e2499d5539c16d0d173ba53552a4ff8547f4539",
-        "type": "github"
+        "path": "/nix/store/0lc6kbmhkqk8vmgflpn2n1d1qb3vl2f5-source",
+        "type": "path"
       },
       "original": {
         "owner": "NixOS",
@@ -53,7 +35,6 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "host-tools": "host-tools",
         "nixpkgs": "nixpkgs"
       }
     },

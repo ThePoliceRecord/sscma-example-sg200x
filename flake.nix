@@ -4,18 +4,21 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-
-    # Sophgo host-tools containing the RISC-V toolchain
-    host-tools = {
-      url = "github:sophgo/host-tools";
-      flake = false;
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, host-tools }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        # Fetch host-tools from GitHub archive zip
+        # Note: If toolchains are in Git LFS, this won't include them!
+        # We'll test and see...
+        host-tools = pkgs.fetchzip {
+          url = "https://github.com/sophgo/host-tools/archive/refs/heads/master.zip";
+          sha256 = "sha256-OARUHjWRIcsKo0LVm1T4/CBaf2Lis3YKO9ZXfC5KD8E=";
+          stripRoot = true;
+        };
 
         # Toolchain path inside host-tools repo
         toolchainSubdir = "gcc/riscv64-linux-musl-x86_64";

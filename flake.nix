@@ -26,14 +26,10 @@
         # Build target for reCamera-OS
         buildTarget = "sg2002_recamera_emmc";
         
-        # Check if reCamera-OS exists at ../reCamera-OS
-        recameraOsPath = ../reCamera-OS;
-        hasRecameraOs = builtins.pathExists recameraOsPath;
-
-        # SDK path - use manual build if exists
-        sdkPath = if hasRecameraOs && builtins.pathExists (recameraOsPath + "/output/${buildTarget}")
-          then "${recameraOsPath}/output/${buildTarget}"
-          else null;
+        # SDK path will be set at runtime from the actual filesystem
+        # We can't use relative paths in Nix because they get copied to the store
+        # Instead, we'll check for the SDK at runtime in the shell profile
+        sdkPath = null;  # Will be detected at runtime
 
         # FHS environment for running the toolchain
         fhsEnv = pkgs.buildFHSEnv {
@@ -80,21 +76,22 @@
             echo ""
             echo "✓ Toolchain: ${host-tools}/${toolchainSubdir}"
             
-            ${if sdkPath != null then ''
-              # SDK from manual build
-              export SG200X_SDK_PATH="${sdkPath}"
-              export TPU_SDK_PATH="${sdkPath}/tpu_musl_riscv64/cvitek_tpu_sdk"
+            # Detect SDK at runtime from the actual filesystem
+            # Check for SDK in ../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}
+            SDK_INSTALL_PATH="$PROJECT_ROOT/../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}"
+            
+            if [ -d "$SDK_INSTALL_PATH" ]; then
+              export SG200X_SDK_PATH="$SDK_INSTALL_PATH"
+              export TPU_SDK_PATH="$SDK_INSTALL_PATH/tpu_musl_riscv64/cvitek_tpu_sdk"
               
-              if [ -d "$SG200X_SDK_PATH" ]; then
-                echo "✓ SDK (manual build): $SG200X_SDK_PATH"
-                
-                if [ -d "$TPU_SDK_PATH" ]; then
-                  echo "✓ TPU SDK: $TPU_SDK_PATH"
-                  export PKG_CONFIG_PATH="$TPU_SDK_PATH/lib/pkgconfig:$PKG_CONFIG_PATH"
-                  export LD_LIBRARY_PATH="$TPU_SDK_PATH/lib:$LD_LIBRARY_PATH"
-                fi
+              echo "✓ SDK (manual build): $SG200X_SDK_PATH"
+              
+              if [ -d "$TPU_SDK_PATH" ]; then
+                echo "✓ TPU SDK: $TPU_SDK_PATH"
+                export PKG_CONFIG_PATH="$TPU_SDK_PATH/lib/pkgconfig:$PKG_CONFIG_PATH"
+                export LD_LIBRARY_PATH="$TPU_SDK_PATH/lib:$LD_LIBRARY_PATH"
               fi
-            '' else ''
+            else
               echo "⚠ No SDK found"
               echo ""
               echo "Build SDK first from main project:"
@@ -104,7 +101,7 @@
               echo "Or build in reCamera-OS directly:"
               echo "  cd ../reCamera-OS"
               echo "  nix develop  # Then run docker_build.sh"
-            ''}
+            fi
 
             echo ""
             # Verify toolchain

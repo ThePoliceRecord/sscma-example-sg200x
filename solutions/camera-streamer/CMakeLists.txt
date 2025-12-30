@@ -101,6 +101,7 @@ link_directories(${SDK_LIB})
 add_executable(camera-streamer
     main/main.cpp
     ../../components/sophgo/video/video.c
+    ../../components/sophgo/video/src/video_shm.c
     ${MONGOOSE_SRC}
     ${SOPHGO_COMMON_SRC}
     ${SOPHGO_VIDEO_SRC}
@@ -108,7 +109,7 @@ add_executable(camera-streamer
 
 # Link SDK libraries (complete set)
 target_link_libraries(camera-streamer
-    # Video subsystem  
+    # Video subsystem
     venc vpss vi vdec vo
     # ISP and algorithms
     isp ae awb af
@@ -118,7 +119,7 @@ target_link_libraries(camera-streamer
     # Sensor drivers
     sns_full
     # Additional dependencies
-    pthread atomic
+    pthread atomic rt
 )
 
 # Install

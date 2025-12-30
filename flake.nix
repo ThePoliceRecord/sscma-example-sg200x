@@ -4,24 +4,32 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-
-    # Sophgo host-tools containing the RISC-V toolchain
-    host-tools = {
-      url = "github:sophgo/host-tools";
-      flake = false;
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, host-tools }:
+  outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        # Local SDK path (relative to project root)
-        sdkPath = "./temp/sg2002_recamera_emmc";
+        # Fetch host-tools from GitHub archive zip
+        # Note: If toolchains are in Git LFS, this won't include them!
+        # We'll test and see...
+        host-tools = pkgs.fetchzip {
+          url = "https://github.com/sophgo/host-tools/archive/refs/heads/master.zip";
+          sha256 = "sha256-OARUHjWRIcsKo0LVm1T4/CBaf2Lis3YKO9ZXfC5KD8E=";
+          stripRoot = true;
+        };
 
         # Toolchain path inside host-tools repo
         toolchainSubdir = "gcc/riscv64-linux-musl-x86_64";
+
+        # Build target for reCamera-OS
+        buildTarget = "sg2002_recamera_emmc";
+        
+        # SDK path will be set at runtime from the actual filesystem
+        # We can't use relative paths in Nix because they get copied to the store
+        # Instead, we'll check for the SDK at runtime in the shell profile
+        sdkPath = null;  # Will be detected at runtime
 
         # FHS environment for running the toolchain
         fhsEnv = pkgs.buildFHSEnv {
@@ -60,33 +68,58 @@
             # Toolchain from Nix store (fetched from sophgo/host-tools)
             export TOOLCHAIN_PATH="${host-tools}/${toolchainSubdir}"
             export PATH="$TOOLCHAIN_PATH/bin:$PATH"
+            
+            echo ""
+            echo "════════════════════════════════════════════════════════════"
+            echo "  SSCMA SG200X Development Environment"
+            echo "════════════════════════════════════════════════════════════"
+            echo ""
             echo "✓ Toolchain: ${host-tools}/${toolchainSubdir}"
-
-            # Set SDK path
-            if [ -d "${sdkPath}" ]; then
-              export SG200X_SDK_PATH="$PROJECT_ROOT/temp/sg2002_recamera_emmc"
-              echo "✓ SDK: $SG200X_SDK_PATH"
+            
+            # Detect SDK at runtime from the actual filesystem
+            # Check for SDK in ../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}
+            SDK_INSTALL_PATH="$PROJECT_ROOT/../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}"
+            
+            if [ -d "$SDK_INSTALL_PATH" ]; then
+              export SG200X_SDK_PATH="$SDK_INSTALL_PATH"
+              export TPU_SDK_PATH="$SDK_INSTALL_PATH/tpu_musl_riscv64/cvitek_tpu_sdk"
+              
+              echo "✓ SDK (manual build): $SG200X_SDK_PATH"
+              
+              if [ -d "$TPU_SDK_PATH" ]; then
+                echo "✓ TPU SDK: $TPU_SDK_PATH"
+                export PKG_CONFIG_PATH="$TPU_SDK_PATH/lib/pkgconfig:$PKG_CONFIG_PATH"
+                export LD_LIBRARY_PATH="$TPU_SDK_PATH/lib:$LD_LIBRARY_PATH"
+              fi
             else
-              echo "⚠ SDK not found at ${sdkPath}"
-              echo "  Download from: https://github.com/Seeed-Studio/reCamera-OS/releases"
+              echo "⚠ No SDK found"
+              echo ""
+              echo "Build SDK first from main project:"
+              echo "  cd ../../  # Back to authority-alert root"
+              echo "  nix run .#build"
+              echo ""
+              echo "Or build in reCamera-OS directly:"
+              echo "  cd ../reCamera-OS"
+              echo "  nix develop  # Then run docker_build.sh"
             fi
 
+            echo ""
             # Verify toolchain
             if command -v riscv64-unknown-linux-musl-gcc &> /dev/null; then
               echo "✓ Compiler: $(riscv64-unknown-linux-musl-gcc --version | head -1)"
             else
-              echo "⚠ Toolchain compiler not found"
+              echo "⚠ Toolchain compiler not found in PATH"
             fi
 
             echo ""
-            echo "╔════════════════════════════════════════════════════════════╗"
-            echo "║      SSCMA SG200X Development Environment                  ║"
-            echo "╚════════════════════════════════════════════════════════════╝"
+            echo "════════════════════════════════════════════════════════════"
             echo ""
-            echo "Build a solution:"
+            echo "Quick Start:"
             echo "  cd solutions/helloworld"
             echo "  cmake -B build -DCMAKE_BUILD_TYPE=Release ."
             echo "  cmake --build build"
+            echo ""
+            echo "════════════════════════════════════════════════════════════"
             echo ""
           '';
 
@@ -101,7 +134,9 @@
           buildInputs = [ fhsEnv ];
 
           shellHook = ''
-            echo "Starting FHS environment for toolchain compatibility..."
+            echo "════════════════════════════════════════════════════════════"
+            echo " Starting SSCMA SG200X Development Environment"
+            echo "════════════════════════════════════════════════════════════"
             exec ${fhsEnv}/bin/sscma-sg200x-fhs
           '';
         };

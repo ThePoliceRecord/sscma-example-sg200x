@@ -9,6 +9,7 @@
 
 extern "C" {
 #include "video.h"
+#include "video_shm.h"
 #include "mongoose.h"
 }
 
@@ -22,6 +23,8 @@ static std::set<struct mg_connection*> g_ws_clients;
 static std::queue<std::pair<uint8_t*, size_t>> g_frame_queue;
 static std::mutex g_clients_mutex;
 static std::mutex g_queue_mutex;
+static video_shm_producer_t g_shm_producer;
+static bool g_shm_enabled = true;
 
 // Signal handler for graceful shutdown
 static void signal_handler(int signo) {
@@ -73,7 +76,24 @@ static int video_frame_callback(void* pData, void* pArgs, void* pUserData) {
         uint8_t* frame_data = ppack->pu8Addr + ppack->u32Offset;
         uint32_t frame_len = ppack->u32Len - ppack->u32Offset;
 
-        // Allocate buffer for frame + timestamp (8 bytes)
+        // Write to shared memory (zero-copy for local apps)
+        if (g_shm_enabled) {
+            video_frame_meta_t meta = {0};
+            meta.timestamp_ms = timestamp;
+            meta.size = frame_len;
+            meta.is_keyframe = (ppack->DataType.enH264EType == H264E_NALU_IDRSLICE ||
+                                ppack->DataType.enH264EType == H264E_NALU_ISLICE) ? 1 : 0;
+            meta.codec = 0;  // H.264
+            meta.width = 1920;
+            meta.height = 1080;
+            meta.fps = 30;
+
+            if (video_shm_producer_write(&g_shm_producer, frame_data, frame_len, &meta) < 0) {
+                printf("%s: WARNING: Failed to write frame to shared memory\n", TAG);
+            }
+        }
+
+        // Allocate buffer for frame + timestamp (8 bytes) for WebSocket clients
         size_t total_len = frame_len + 8;
         uint8_t* buffer = new uint8_t[total_len];
         
@@ -136,10 +156,22 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    // Initialize shared memory IPC
+    printf("%s: Initializing shared memory IPC...\n", TAG);
+    if (video_shm_producer_init(&g_shm_producer) != 0) {
+        fprintf(stderr, "%s: WARNING: Failed to initialize shared memory (continuing without IPC)\n", TAG);
+        g_shm_enabled = false;
+    } else {
+        printf("%s: Shared memory IPC enabled at %s\n", TAG, VIDEO_SHM_NAME);
+    }
+
     // Initialize video subsystem
     printf("%s: Initializing video subsystem...\n", TAG);
     if (initVideo() != 0) {
         fprintf(stderr, "%s: Failed to initialize video\n", TAG);
+        if (g_shm_enabled) {
+            video_shm_producer_destroy(&g_shm_producer);
+        }
         return -1;
     }
 
@@ -208,6 +240,11 @@ int main(int argc, char* argv[]) {
     
     deinitVideo();
     mg_mgr_free(&g_mgr);
+    
+    // Cleanup shared memory
+    if (g_shm_enabled) {
+        video_shm_producer_destroy(&g_shm_producer);
+    }
     
     printf("%s: Shutdown complete\n", TAG);
     return 0;

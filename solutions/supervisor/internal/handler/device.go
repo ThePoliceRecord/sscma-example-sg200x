@@ -587,7 +587,7 @@ func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
 	// Unmount any existing mounts first
 	exec.Command("umount", "-f", sdDevice+"p1").Run()
 	exec.Command("umount", "-f", sdDevice).Run()
-	exec.Command("umount", "-f", "/tmp/sd").Run()
+	exec.Command("umount", "-f", "/mnt/sd").Run()
 	time.Sleep(500 * time.Millisecond)
 
 	// Try to find existing partition
@@ -661,13 +661,13 @@ func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
 	time.Sleep(1 * time.Second)
 
 	// Remount the SD card with explicit filesystem type
-	os.MkdirAll("/tmp/sd", 0755)
-	mountCmd := exec.Command("mount", "-t", "exfat", targetDevice, "/tmp/sd")
+	os.MkdirAll("/mnt/sd", 0755)
+	mountCmd := exec.Command("mount", "-t", "exfat", targetDevice, "/mnt/sd")
 	if mountOutput, err := mountCmd.CombinedOutput(); err != nil {
 		logger.Warning("SD card formatted but failed to remount: %v, output: %s", err, string(mountOutput))
 		// Don't fail the request since format was successful
 	} else {
-		logger.Info("SD card remounted successfully at /tmp/sd")
+		logger.Info("SD card remounted successfully at /mnt/sd")
 	}
 
 	api.WriteSuccess(w, map[string]interface{}{

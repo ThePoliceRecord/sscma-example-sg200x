@@ -28,20 +28,29 @@ static uint64_t get_timestamp_ms(void) {
 
 /* Producer Implementation */
 
-int video_shm_producer_init(video_shm_producer_t* producer) {
+int video_shm_producer_init_channel(video_shm_producer_t* producer, int channel_id) {
     if (!producer) {
         LOG_ERROR("NULL producer handle");
         return -1;
     }
 
     memset(producer, 0, sizeof(video_shm_producer_t));
+    producer->channel_id = channel_id;
+
+    /* Construct channel-specific names */
+    snprintf(producer->shm_name, sizeof(producer->shm_name), 
+             "%s_ch%d", VIDEO_SHM_BASE_NAME, channel_id);
+    snprintf(producer->sem_write_name, sizeof(producer->sem_write_name),
+             "%s_ch%d", VIDEO_SHM_SEM_WRITE_BASE, channel_id);
+    snprintf(producer->sem_read_name, sizeof(producer->sem_read_name),
+             "%s_ch%d", VIDEO_SHM_SEM_READ_BASE, channel_id);
 
     /* Create/open shared memory */
-    shm_unlink(VIDEO_SHM_NAME);  /* Clean up any stale instance */
+    shm_unlink(producer->shm_name);  /* Clean up any stale instance */
     
-    producer->shm_fd = shm_open(VIDEO_SHM_NAME, O_CREAT | O_RDWR, 0666);
+    producer->shm_fd = shm_open(producer->shm_name, O_CREAT | O_RDWR, 0666);
     if (producer->shm_fd < 0) {
-        LOG_ERROR("shm_open failed: %s", strerror(errno));
+        LOG_ERROR("shm_open(%s) failed: %s", producer->shm_name, strerror(errno));
         return -1;
     }
 
@@ -49,7 +58,7 @@ int video_shm_producer_init(video_shm_producer_t* producer) {
     if (ftruncate(producer->shm_fd, sizeof(video_shm_t)) < 0) {
         LOG_ERROR("ftruncate failed: %s", strerror(errno));
         close(producer->shm_fd);
-        shm_unlink(VIDEO_SHM_NAME);
+        shm_unlink(producer->shm_name);
         return -1;
     }
 
@@ -60,7 +69,7 @@ int video_shm_producer_init(video_shm_producer_t* producer) {
     if (producer->shm == MAP_FAILED) {
         LOG_ERROR("mmap failed: %s", strerror(errno));
         close(producer->shm_fd);
-        shm_unlink(VIDEO_SHM_NAME);
+        shm_unlink(producer->shm_name);
         return -1;
     }
 
@@ -70,33 +79,38 @@ int video_shm_producer_init(video_shm_producer_t* producer) {
     producer->shm->version = VIDEO_SHM_VERSION;
 
     /* Create semaphores */
-    sem_unlink(VIDEO_SHM_SEM_WRITE);
-    sem_unlink(VIDEO_SHM_SEM_READ);
+    sem_unlink(producer->sem_write_name);
+    sem_unlink(producer->sem_read_name);
 
-    producer->sem_write = sem_open(VIDEO_SHM_SEM_WRITE, O_CREAT, 0666, 1);
+    producer->sem_write = sem_open(producer->sem_write_name, O_CREAT, 0666, 1);
     if (producer->sem_write == SEM_FAILED) {
-        LOG_ERROR("sem_open(write) failed: %s", strerror(errno));
+        LOG_ERROR("sem_open(%s) failed: %s", producer->sem_write_name, strerror(errno));
         munmap(producer->shm, sizeof(video_shm_t));
         close(producer->shm_fd);
-        shm_unlink(VIDEO_SHM_NAME);
+        shm_unlink(producer->shm_name);
         return -1;
     }
 
-    producer->sem_read = sem_open(VIDEO_SHM_SEM_READ, O_CREAT, 0666, 0);
+    producer->sem_read = sem_open(producer->sem_read_name, O_CREAT, 0666, 0);
     if (producer->sem_read == SEM_FAILED) {
-        LOG_ERROR("sem_open(read) failed: %s", strerror(errno));
+        LOG_ERROR("sem_open(%s) failed: %s", producer->sem_read_name, strerror(errno));
         sem_close(producer->sem_write);
-        sem_unlink(VIDEO_SHM_SEM_WRITE);
+        sem_unlink(producer->sem_write_name);
         munmap(producer->shm, sizeof(video_shm_t));
         close(producer->shm_fd);
-        shm_unlink(VIDEO_SHM_NAME);
+        shm_unlink(producer->shm_name);
         return -1;
     }
 
-    LOG_INFO("Producer initialized: shm_size=%zu bytes, ring_size=%d frames",
-             sizeof(video_shm_t), VIDEO_SHM_RING_SIZE);
+    LOG_INFO("Producer initialized (CH%d): shm=%s, shm_size=%zu bytes, ring_size=%d frames",
+             channel_id, producer->shm_name, sizeof(video_shm_t), VIDEO_SHM_RING_SIZE);
 
     return 0;
+}
+
+int video_shm_producer_init(video_shm_producer_t* producer) {
+    /* Legacy function - defaults to channel 0 */
+    return video_shm_producer_init_channel(producer, 0);
 }
 
 int video_shm_producer_write(video_shm_producer_t* producer,
@@ -154,18 +168,19 @@ int video_shm_producer_write(video_shm_producer_t* producer,
 void video_shm_producer_destroy(video_shm_producer_t* producer) {
     if (!producer) return;
 
-    LOG_INFO("Destroying producer: total_frames=%u, dropped=%u",
+    LOG_INFO("Destroying producer (CH%d): total_frames=%u, dropped=%u",
+             producer->channel_id,
              producer->shm ? producer->shm->frame_count : 0,
              producer->shm ? producer->shm->dropped_frames : 0);
 
     if (producer->sem_read != SEM_FAILED) {
         sem_close(producer->sem_read);
-        sem_unlink(VIDEO_SHM_SEM_READ);
+        sem_unlink(producer->sem_read_name);
     }
 
     if (producer->sem_write != SEM_FAILED) {
         sem_close(producer->sem_write);
-        sem_unlink(VIDEO_SHM_SEM_WRITE);
+        sem_unlink(producer->sem_write_name);
     }
 
     if (producer->shm != MAP_FAILED) {
@@ -174,7 +189,7 @@ void video_shm_producer_destroy(video_shm_producer_t* producer) {
 
     if (producer->shm_fd >= 0) {
         close(producer->shm_fd);
-        shm_unlink(VIDEO_SHM_NAME);
+        shm_unlink(producer->shm_name);
     }
 
     memset(producer, 0, sizeof(video_shm_producer_t));
@@ -182,24 +197,34 @@ void video_shm_producer_destroy(video_shm_producer_t* producer) {
 
 /* Consumer Implementation */
 
-int video_shm_consumer_init(video_shm_consumer_t* consumer) {
+int video_shm_consumer_init_channel(video_shm_consumer_t* consumer, int channel_id) {
     if (!consumer) {
         LOG_ERROR("NULL consumer handle");
         return -1;
     }
 
     memset(consumer, 0, sizeof(video_shm_consumer_t));
+    consumer->channel_id = channel_id;
+
+    /* Construct channel-specific names */
+    snprintf(consumer->shm_name, sizeof(consumer->shm_name), 
+             "%s_ch%d", VIDEO_SHM_BASE_NAME, channel_id);
+    snprintf(consumer->sem_write_name, sizeof(consumer->sem_write_name),
+             "%s_ch%d", VIDEO_SHM_SEM_WRITE_BASE, channel_id);
+    snprintf(consumer->sem_read_name, sizeof(consumer->sem_read_name),
+             "%s_ch%d", VIDEO_SHM_SEM_READ_BASE, channel_id);
 
     /* Open existing shared memory */
-    consumer->shm_fd = shm_open(VIDEO_SHM_NAME, O_RDONLY, 0666);
+    consumer->shm_fd = shm_open(consumer->shm_name, O_RDWR, 0666);
     if (consumer->shm_fd < 0) {
-        LOG_ERROR("shm_open failed: %s (is producer running?)", strerror(errno));
+        LOG_ERROR("shm_open(%s) failed: %s (is producer running?)", 
+                  consumer->shm_name, strerror(errno));
         return -1;
     }
 
-    /* Map memory (read-only) */
+    /* Map memory (read-write for atomic operations) */
     consumer->shm = mmap(NULL, sizeof(video_shm_t), 
-                         PROT_READ, MAP_SHARED, 
+                         PROT_READ | PROT_WRITE, MAP_SHARED, 
                          consumer->shm_fd, 0);
     if (consumer->shm == MAP_FAILED) {
         LOG_ERROR("mmap failed: %s", strerror(errno));
@@ -225,17 +250,17 @@ int video_shm_consumer_init(video_shm_consumer_t* consumer) {
     }
 
     /* Open semaphores */
-    consumer->sem_write = sem_open(VIDEO_SHM_SEM_WRITE, 0);
+    consumer->sem_write = sem_open(consumer->sem_write_name, 0);
     if (consumer->sem_write == SEM_FAILED) {
-        LOG_ERROR("sem_open(write) failed: %s", strerror(errno));
+        LOG_ERROR("sem_open(%s) failed: %s", consumer->sem_write_name, strerror(errno));
         munmap(consumer->shm, sizeof(video_shm_t));
         close(consumer->shm_fd);
         return -1;
     }
 
-    consumer->sem_read = sem_open(VIDEO_SHM_SEM_READ, 0);
+    consumer->sem_read = sem_open(consumer->sem_read_name, 0);
     if (consumer->sem_read == SEM_FAILED) {
-        LOG_ERROR("sem_open(read) failed: %s", strerror(errno));
+        LOG_ERROR("sem_open(%s) failed: %s", consumer->sem_read_name, strerror(errno));
         sem_close(consumer->sem_write);
         munmap(consumer->shm, sizeof(video_shm_t));
         close(consumer->shm_fd);
@@ -248,10 +273,15 @@ int video_shm_consumer_init(video_shm_consumer_t* consumer) {
 
     __sync_fetch_and_add(&consumer->shm->active_readers, 1);
 
-    LOG_INFO("Consumer initialized: reader_id=%u, starting_seq=%u",
-             consumer->reader_id, consumer->last_sequence);
+    LOG_INFO("Consumer initialized (CH%d): shm=%s, reader_id=%u, starting_seq=%u",
+             channel_id, consumer->shm_name, consumer->reader_id, consumer->last_sequence);
 
     return 0;
+}
+
+int video_shm_consumer_init(video_shm_consumer_t* consumer) {
+    /* Legacy function - defaults to channel 0 */
+    return video_shm_consumer_init_channel(consumer, 0);
 }
 
 int video_shm_consumer_read(video_shm_consumer_t* consumer,
@@ -360,8 +390,8 @@ void video_shm_consumer_destroy(video_shm_consumer_t* consumer) {
 
     if (consumer->shm) {
         __sync_fetch_and_sub(&consumer->shm->active_readers, 1);
-        LOG_INFO("Consumer destroyed: reader_id=%u, last_seq=%u",
-                 consumer->reader_id, consumer->last_sequence);
+        LOG_INFO("Consumer destroyed (CH%d): reader_id=%u, last_seq=%u",
+                 consumer->channel_id, consumer->reader_id, consumer->last_sequence);
     }
 
     if (consumer->sem_read != SEM_FAILED) {

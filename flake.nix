@@ -81,6 +81,31 @@
             SDK_INSTALL_PATH="$PROJECT_ROOT/../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}"
             
             if [ -d "$SDK_INSTALL_PATH" ]; then
+              # Check if SDK needs to be extracted
+              SDK_TARBALL="$SDK_INSTALL_PATH/sg2002_reCamera_0.2.3_emmc_sdk.tar.gz"
+              SDK_EXTRACTED_MARKER="$SDK_INSTALL_PATH/sg2002_recamera_emmc"
+              
+              if [ -f "$SDK_TARBALL" ] && [ ! -d "$SDK_EXTRACTED_MARKER" ]; then
+                echo ""
+                echo "📦 Extracting SDK (first time setup)..."
+                tar -xzf "$SDK_TARBALL" -C "$SDK_INSTALL_PATH" 2>/dev/null
+                if [ $? -eq 0 ]; then
+                  echo "✓ SDK extracted successfully"
+                else
+                  echo "⚠ Failed to extract SDK"
+                fi
+              fi
+              
+              # Create symlinks if needed (for backwards compatibility with CMakeLists.txt)
+              if [ -d "$SDK_EXTRACTED_MARKER" ]; then
+                if [ ! -L "$SDK_INSTALL_PATH/cvi_mpi" ]; then
+                  echo "🔗 Creating SDK symlinks..."
+                  ln -sf sg2002_recamera_emmc/cvi_mpi "$SDK_INSTALL_PATH/cvi_mpi" 2>/dev/null
+                  ln -sf sg2002_recamera_emmc/osdrv "$SDK_INSTALL_PATH/osdrv" 2>/dev/null
+                  echo "✓ SDK symlinks created"
+                fi
+              fi
+              
               export SG200X_SDK_PATH="$SDK_INSTALL_PATH"
               export TPU_SDK_PATH="$SDK_INSTALL_PATH/tpu_musl_riscv64/cvitek_tpu_sdk"
               

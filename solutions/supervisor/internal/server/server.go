@@ -177,6 +177,7 @@ func (s *Server) setupRoutes() http.Handler {
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
 		"/api/version":                      true,
+		"/api/channels":                     true, // Channel discovery for video player
 		"/api/userMgr/login":                true,
 		"/api/userMgr/queryUserInfo":        true, // Needed to check firstLogin status
 		"/api/userMgr/updatePassword":       true, // Needed for first login password change
@@ -228,6 +229,9 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/formatSDCard", deviceHandler.FormatSDCard)
 	apiHandler.HandleFunc("/api/deviceMgr/getPlatformInfo", deviceHandler.GetPlatformInfo)
 	apiHandler.HandleFunc("/api/deviceMgr/savePlatformInfo", deviceHandler.SavePlatformInfo)
+
+	// Camera/Video management
+	apiHandler.HandleFunc("/api/channels", handler.GetChannels)
 
 	// WiFi management
 	apiHandler.HandleFunc("/api/wifiMgr/getWiFiInfoList", s.wifiHandler.GetWiFiInfoList)

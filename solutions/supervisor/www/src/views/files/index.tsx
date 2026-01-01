@@ -334,11 +334,27 @@ const Files = () => {
 
     const fullPath = currentPath ? `${currentPath}/${filename}` : filename;
     const token = getToken();
+    
+    // Check if file is being actively recorded
+    try {
+      const headUrl = `/api/fileMgr/download?path=${encodeURIComponent(
+        fullPath
+      )}&storage=${encodeURIComponent(currentStorage)}&authorization=${token}`;
+      const response = await fetch(`${baseIP}${headUrl}`, { method: 'HEAD' });
+      const fileStatus = response.headers.get('X-File-Status');
+      
+      if (fileStatus === 'recording') {
+        messageApi.warning('This file is currently being recorded. Preview may show incomplete content.');
+      }
+    } catch (error) {
+      console.warn('Failed to check file status:', error);
+    }
+
     const url = `/api/fileMgr/download?path=${encodeURIComponent(
       fullPath
     )}&storage=${encodeURIComponent(currentStorage)}&authorization=${token}`;
     const videoUrl = `${baseIP}${url}`;
-    setPreviewImageUrl(videoUrl); // Reuse the same state
+    setPreviewImageUrl(videoUrl);
     setPreviewFileName(filename);
     setPreviewModalVisible(true);
   };

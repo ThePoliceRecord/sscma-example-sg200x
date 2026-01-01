@@ -305,6 +305,45 @@ func (m *WiFiManager) Scan() ([]WiFiNetwork, error) {
 
 // scanWithWPACli performs a WiFi scan using wpa_cli (works while connected).
 func (m *WiFiManager) scanWithWPACli() ([]WiFiNetwork, error) {
+	// Check if we're connected - if so, don't trigger new scan to avoid disconnection
+	status, err := m.GetStatus()
+	if err == nil && status != nil && status.State == "COMPLETED" {
+		// Already connected - use cached scan results only, don't trigger new scan
+		// This prevents the disconnect/reconnect cycle caused by active scanning
+		results, err := m.wpa.ScanResults()
+		if err != nil {
+			return nil, err
+		}
+
+		var networks []WiFiNetwork
+		for _, r := range results {
+			// Skip networks with empty SSIDs (hidden networks)
+			if r.SSID == "" {
+				continue
+			}
+
+			security := ""
+			if strings.Contains(r.Flags, "WPA2") || strings.Contains(r.Flags, "RSN") {
+				security = "WPA2"
+			} else if strings.Contains(r.Flags, "WPA") {
+				security = "WPA"
+			} else if strings.Contains(r.Flags, "WEP") {
+				security = "WEP"
+			}
+
+			networks = append(networks, WiFiNetwork{
+				SSID:      r.SSID,
+				BSSID:     r.BSSID,
+				Signal:    r.Signal,
+				Frequency: r.Frequency,
+				Security:  security,
+			})
+		}
+
+		return networks, nil
+	}
+
+	// Not connected - safe to trigger active scan
 	// Trigger a new scan
 	m.wpa.Scan()
 

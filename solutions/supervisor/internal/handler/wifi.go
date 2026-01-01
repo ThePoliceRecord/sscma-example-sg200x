@@ -86,22 +86,13 @@ func (h *WiFiHandler) Stop() {
 	close(h.stopChan)
 }
 
-// monitorWiFi periodically scans for WiFi networks.
+// monitorWiFi was removed - automatic background scanning disabled.
+// WiFi scans are now only triggered on explicit user request via GetWiFiInfoList API
+// to prevent disconnect/reconnect issues caused by active scanning.
 func (h *WiFiHandler) monitorWiFi() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	// Initial scan
-	h.scanNetworks()
-
-	for {
-		select {
-		case <-ticker.C:
-			h.scanNetworks()
-		case <-h.stopChan:
-			return
-		}
-	}
+	// Background monitoring disabled to prevent WiFi disconnections
+	// Scans only happen when user explicitly requests WiFi list
+	<-h.stopChan
 }
 
 // getWifiEnable returns the WiFi enable status

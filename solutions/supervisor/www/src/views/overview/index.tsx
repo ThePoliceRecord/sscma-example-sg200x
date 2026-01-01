@@ -77,7 +77,7 @@ function Home() {
 					width='100%'
 					muted
 					autoPlay
-					controls
+					playsInline
 				></video>
 			</div>
 			

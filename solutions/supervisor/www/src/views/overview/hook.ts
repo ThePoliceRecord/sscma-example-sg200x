@@ -33,9 +33,30 @@ export default function usehookData() {
     delay: 0,
   });
   
+  const reconnectAttempts = useRef(0);
+  const maxReconnectAttempts = 10;
+  const reconnectTimeoutRef = useRef<any>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
+  const bufferCheckIntervalRef = useRef<any>(null);
+  
   const { getWebSocket, readyState } = useWebSocket(socketUrl, {
     onMessage,
     shouldReconnect: () => true,
+    reconnectAttempts: maxReconnectAttempts,
+    reconnectInterval: (attemptNumber) => {
+      // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
+      return Math.min(1000 * Math.pow(2, attemptNumber), 30000);
+    },
+    onOpen: () => {
+      console.log('WebSocket connected');
+      reconnectAttempts.current = 0;
+    },
+    onClose: () => {
+      console.log('WebSocket disconnected');
+    },
+    onError: (error) => {
+      console.error('WebSocket error:', error);
+    },
   });
 
   // Fetch channel list from API
@@ -89,8 +110,83 @@ export default function usehookData() {
       }, 0);
     } catch (err) {
       console.log("err:", err);
+      // Retry connection after delay
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        reconnectAttempts.current++;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+        console.log(`Retrying connection in ${delay}ms (attempt ${reconnectAttempts.current})`);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          getWebsocketUrl();
+        }, delay);
+      }
     }
   };
+
+  // Monitor video buffer and keep at live edge
+  useEffect(() => {
+    const setupBufferMonitoring = () => {
+      const video = document.getElementById('player') as HTMLVideoElement;
+      videoElementRef.current = video;
+      
+      if (video) {
+        // Clear any existing interval
+        if (bufferCheckIntervalRef.current) {
+          clearInterval(bufferCheckIntervalRef.current);
+        }
+        
+        // Check buffer every 1 second
+        bufferCheckIntervalRef.current = setInterval(() => {
+          const videoEl = videoElementRef.current;
+          if (!videoEl) return;
+          
+          // If video has buffered data
+          if (videoEl.buffered.length > 0) {
+            const bufferEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
+            const currentTime = videoEl.currentTime;
+            const bufferDiff = bufferEnd - currentTime;
+            
+            // If we're more than 2 seconds behind the live edge, jump to latest
+            if (bufferDiff > 2) {
+              console.log(`Buffer lag detected: ${bufferDiff.toFixed(2)}s, jumping to live edge`);
+              videoEl.currentTime = bufferEnd - 0.5; // Stay slightly before the end
+            }
+            
+            // If buffer is too large (more than 5 seconds), clear old data
+            if (bufferDiff > 5 && jmuxerIns) {
+              console.log('Large buffer detected, clearing old frames');
+              // The jmuxer clearBuffer option should handle this, but we can also seek
+              videoEl.currentTime = bufferEnd - 0.5;
+            }
+          }
+        }, 1000);
+        
+        // Handle waiting/stalling events
+        video.addEventListener('waiting', () => {
+          console.log('Video waiting for data...');
+        });
+        
+        video.addEventListener('playing', () => {
+          console.log('Video playing');
+        });
+        
+        // Keep video muted and playing
+        video.muted = true;
+        if (video.paused) {
+          video.play().catch((err: any) => console.log('Auto-play prevented:', err));
+        }
+      }
+    };
+    
+    // Setup monitoring after a short delay to ensure video element exists
+    const setupTimeout = setTimeout(setupBufferMonitoring, 500);
+    
+    return () => {
+      clearTimeout(setupTimeout);
+      if (bufferCheckIntervalRef.current) {
+        clearInterval(bufferCheckIntervalRef.current);
+      }
+    };
+  }, [selectedChannel]);
 
   // Reconnect when selected channel changes (only after channels are loaded)
   useEffect(() => {
@@ -104,14 +200,14 @@ export default function usehookData() {
       const channelInfo = channels.find(ch => ch.id === selectedChannel);
       const fps = channelInfo ? channelInfo.fps : 30;
       
-      // Create new jmuxer with correct FPS
+      // Create new jmuxer with correct FPS and low-latency settings
       jmuxerIns = new jmuxer({
         debug: false,
         node: "player",
         mode: "video",
-        flushingTime: 0,
+        flushingTime: 0, // Minimal buffering
         fps: fps,
-        clearBuffer: true,
+        clearBuffer: true, // Continuously clear old buffer
       });
       
       // Reconnect WebSocket with new channel
@@ -152,6 +248,12 @@ export default function usehookData() {
     return () => {
       if (jmuxerIns) {
         jmuxerIns.destroy();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (bufferCheckIntervalRef.current) {
+        clearInterval(bufferCheckIntervalRef.current);
       }
     };
   }, []);

@@ -41,6 +41,7 @@ func CORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, X-File-Status")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		if r.Method == http.MethodOptions {
@@ -114,7 +115,11 @@ func Auth(am *auth.AuthManager, noAuthPaths map[string]bool) func(http.Handler) 
 			// Get token from header
 			token := r.Header.Get("Authorization")
 			if token == "" {
-				// Try query parameter (for backwards compatibility)
+				// Try query parameter "authorization" first (for file downloads in video players)
+				token = r.URL.Query().Get("authorization")
+			}
+			if token == "" {
+				// Try query parameter "token" (for backwards compatibility)
 				token = r.URL.Query().Get("token")
 			}
 

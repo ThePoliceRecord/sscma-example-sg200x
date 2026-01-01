@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"supervisor/internal/api"
 	"supervisor/internal/config"
@@ -600,6 +601,44 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if file is being actively written (modified within last 5 seconds)
+	isLiveFile := time.Since(info.ModTime()) < 5*time.Second
+
+	// Explicitly set Content-Type for video files to ensure proper browser handling
+	ext := strings.ToLower(filepath.Ext(fullPath))
+	switch ext {
+	case ".mp4":
+		w.Header().Set("Content-Type", "video/mp4")
+	case ".webm":
+		w.Header().Set("Content-Type", "video/webm")
+	case ".ogg":
+		w.Header().Set("Content-Type", "video/ogg")
+	case ".avi":
+		w.Header().Set("Content-Type", "video/x-msvideo")
+	case ".mov":
+		w.Header().Set("Content-Type", "video/quicktime")
+	case ".mkv":
+		w.Header().Set("Content-Type", "video/x-matroska")
+	}
+
+	// Set Accept-Ranges header to explicitly indicate range request support
+	// This is critical for video seeking functionality in browsers
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	// For live/actively recording files, disable caching and set streaming headers
+	if isLiveFile {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		// Add custom header to indicate this is an actively recording file
+		w.Header().Set("X-File-Status", "recording")
+		// Add Transfer-Encoding hint that content may grow
+		w.Header().Set("X-Content-Duration", "infinite")
+	} else {
+		w.Header().Set("X-File-Status", "complete")
+	}
+
+	// http.ServeFile handles range requests automatically, but we ensure headers are set first
 	http.ServeFile(w, r, fullPath)
 }
 

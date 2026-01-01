@@ -18,6 +18,11 @@ extern "C" {
 #include <semaphore.h>
 
 /* Configuration */
+#define VIDEO_SHM_BASE_NAME     "/video_stream"
+#define VIDEO_SHM_SEM_WRITE_BASE "/video_sem_write"
+#define VIDEO_SHM_SEM_READ_BASE  "/video_sem_read"
+
+// Legacy name (deprecated, use channel-specific names)
 #define VIDEO_SHM_NAME          "/video_stream"
 #define VIDEO_SHM_SEM_WRITE     "/video_sem_write"
 #define VIDEO_SHM_SEM_READ      "/video_sem_read"
@@ -66,6 +71,10 @@ typedef struct {
     sem_t* sem_write;
     sem_t* sem_read;
     uint32_t sequence;
+    int channel_id;  /* Channel ID for multi-channel support */
+    char shm_name[64];   /* Actual shared memory name */
+    char sem_write_name[64];  /* Semaphore names */
+    char sem_read_name[64];
 } video_shm_producer_t;
 
 /* Consumer handle */
@@ -76,12 +85,24 @@ typedef struct {
     sem_t* sem_read;
     uint32_t last_sequence;     /* Track missed frames */
     uint32_t reader_id;
+    int channel_id;  /* Channel ID for multi-channel support */
+    char shm_name[64];
+    char sem_write_name[64];
+    char sem_read_name[64];
 } video_shm_consumer_t;
 
 /* Producer API */
 
 /**
- * Initialize shared memory producer (camera-streamer)
+ * Initialize shared memory producer (camera-streamer) with channel ID
+ * @param producer Producer handle
+ * @param channel_id Channel identifier (0-2 for CH0, CH1, CH2)
+ * @return 0 on success, -1 on error
+ */
+int video_shm_producer_init_channel(video_shm_producer_t* producer, int channel_id);
+
+/**
+ * Initialize shared memory producer (legacy, uses channel 0)
  * @return 0 on success, -1 on error
  */
 int video_shm_producer_init(video_shm_producer_t* producer);
@@ -107,7 +128,15 @@ void video_shm_producer_destroy(video_shm_producer_t* producer);
 /* Consumer API */
 
 /**
- * Initialize shared memory consumer (other apps)
+ * Initialize shared memory consumer with channel ID
+ * @param consumer Consumer handle
+ * @param channel_id Channel identifier (0-2)
+ * @return 0 on success, -1 on error
+ */
+int video_shm_consumer_init_channel(video_shm_consumer_t* consumer, int channel_id);
+
+/**
+ * Initialize shared memory consumer (legacy, uses channel 0)
  * @return 0 on success, -1 on error
  */
 int video_shm_consumer_init(video_shm_consumer_t* consumer);

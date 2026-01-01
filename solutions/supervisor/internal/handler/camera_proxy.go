@@ -34,18 +34,24 @@ func CameraWebSocketProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer browserConn.Close()
 
-	// Connect to camera-streamer on localhost
-	cameraURL := "ws://localhost:8765"
+	// Extract channel parameter from query string (required by camera-streamer)
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		channel = "1" // Default to channel 1 (medium resolution)
+	}
+
+	// Connect to camera-streamer on localhost with channel parameter
+	cameraURL := "ws://localhost:8765/?channel=" + channel
 	cameraConn, _, err := websocket.DefaultDialer.Dial(cameraURL, nil)
 	if err != nil {
-		logger.Error("Failed to connect to camera-streamer: %v", err)
+		logger.Error("Failed to connect to camera-streamer (channel %s): %v", channel, err)
 		browserConn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "Camera unavailable"))
 		return
 	}
 	defer cameraConn.Close()
 
-	logger.Info("WebSocket proxy established")
+	logger.Info("WebSocket proxy established for channel %s", channel)
 
 	// Bidirectional relay with zero-copy optimization
 	done := make(chan struct{}, 2)

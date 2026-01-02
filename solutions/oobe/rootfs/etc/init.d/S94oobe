@@ -1,0 +1,47 @@
+#!/bin/sh
+
+DAEMON=oobe
+DAEMON_PATH=/usr/local/bin
+DAEMON_ARGS="--listen http://0.0.0.0:8081 --root /usr/share/oobe/www"
+
+start() {
+    printf 'Starting OOBE Service: '
+    PID="$(pidof $DAEMON)"
+
+    if [ "$PID" ]; then
+        echo "$DAEMON is already running."
+    else
+        $DAEMON_PATH/$DAEMON $DAEMON_ARGS >/dev/null 2>&1 &
+        [ $? = 0 ] && echo "OK" || echo "FAIL"
+    fi
+}
+
+stop() {
+    printf 'Stopping OOBE Service: '
+    PID="$(pidof $DAEMON)"
+
+    if [ "$PID" ]; then
+        kill $PID
+        [ $? = 0 ] && echo "OK" || echo "FAIL"
+        sleep 0.1
+    else
+        echo "$DAEMON is not running."
+    fi
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+case "$1" in
+start | stop | restart)
+    "$1"
+    ;;
+*)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+

@@ -304,7 +304,7 @@ nix develop  # Will use existing build
 
 ```
 sscma-example-sg200x/
-├── flake.nix          # Main flake (uses reCamera-OS flake)
+├── flake.nix          # Main flake (uses OS SDK repo if present)
 ├── flake.lock         # Locked dependency versions
 ├── solutions/         # Example applications
 │   └── helloworld/    # Basic example
@@ -312,9 +312,13 @@ sscma-example-sg200x/
 ├── cmake/             # CMake helpers
 ├── scripts/           # Build and deploy scripts
 └── docs/              # Documentation
+    ├── oobe_spec.md
+    ├── oobe_programming_spec.md
+    └── oobe_40hr_plan.md
 
-../reCamera-OS/        # reCamera-OS repository (sibling directory)
-├── flake.nix          # reCamera-OS flake (builds SDK)
+../authority-alert-OS/ # OS SDK repository (sibling directory, preferred)
+../reCamera-OS/        # Legacy name (also supported)
+├── flake.nix          # OS flake (builds SDK)
 ├── docker_build.sh    # Docker-based build script
 ├── Makefile           # Build system entry
 └── output/            # Build artifacts (git-ignored)

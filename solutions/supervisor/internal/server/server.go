@@ -268,9 +268,10 @@ func (s *Server) setupRoutes() http.Handler {
 	// Static file server for web UI
 	fileServer := http.FileServer(http.Dir(s.cfg.RootDir))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Handle root path specially to avoid redirect loop
 		if r.URL.Path == "/" {
-			r = r.Clone(r.Context())
-			r.URL.Path = "/index.html"
+			http.ServeFile(w, r, s.cfg.RootDir+"/index.html")
+			return
 		}
 		fileServer.ServeHTTP(w, r)
 	})

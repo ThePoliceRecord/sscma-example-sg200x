@@ -94,10 +94,42 @@ func (h *FileHandler) getFullPath(relativePath, storage string) string {
 	if storage == "sd" {
 		baseDir = h.sdDir
 	}
-	if relativePath == "" {
-		return baseDir
+
+	// Resolve base directory to an absolute path
+	baseDirAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		// If we cannot resolve, fall back to the original baseDir
+		baseDirAbs = baseDir
 	}
-	return filepath.Join(baseDir, relativePath)
+
+	// If no relative path is provided, return the (absolute) base directory
+	if relativePath == "" {
+		return baseDirAbs
+	}
+
+	// Clean the relative path to remove redundant separators and dots
+	cleanRel := filepath.Clean(relativePath)
+
+	// Join and resolve the target path
+	targetPath := filepath.Join(baseDirAbs, cleanRel)
+	targetAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		// On error resolving the target, return the base directory
+		return baseDirAbs
+	}
+
+	// Ensure that the resulting path is within the base directory.
+	// Allow the base directory itself, or any path under it.
+	baseWithSep := baseDirAbs
+	if !strings.HasSuffix(baseWithSep, string(os.PathSeparator)) {
+		baseWithSep += string(os.PathSeparator)
+	}
+	if targetAbs != baseDirAbs && !strings.HasPrefix(targetAbs, baseWithSep) {
+		// Attempted directory traversal or escape; constrain to base directory
+		return baseDirAbs
+	}
+
+	return targetAbs
 }
 
 // jsonBodyCache stores parsed JSON body for a request

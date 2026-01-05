@@ -31,6 +31,47 @@ func NewLEDHandler() *LEDHandler {
 	}
 }
 
+// getSafeLEDPath returns a sanitized LED path that is guaranteed to be within /sys/class/leds.
+// This function prevents path traversal by using filepath.Rel to verify the path boundary.
+func (h *LEDHandler) getSafeLEDPath(name string) (string, error) {
+	// Sanitize name to prevent path traversal
+	// filepath.Base returns the last element, stripping any directory components
+	safeName := filepath.Base(name)
+
+	// Require non-empty name
+	if safeName == "" || safeName == "." || safeName == ".." {
+		return "", filepath.ErrBadPattern
+	}
+
+	// Construct the LED path
+	ledPath := filepath.Join(h.ledBasePath, safeName)
+
+	// Resolve to absolute paths for verification
+	baseDirAbs, err := filepath.Abs(h.ledBasePath)
+	if err != nil {
+		return "", err
+	}
+
+	ledPathAbs, err := filepath.Abs(ledPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Use filepath.Rel to verify the path is within base directory
+	// This is the robust, CodeQL-recognized way to prevent path traversal
+	rel, err := filepath.Rel(baseDirAbs, ledPathAbs)
+	if err != nil {
+		return "", err
+	}
+
+	// Reject any path that escapes the base directory
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", filepath.ErrBadPattern
+	}
+
+	return ledPathAbs, nil
+}
+
 // GetLEDs returns information about all LEDs.
 func (h *LEDHandler) GetLEDs(w http.ResponseWriter, r *http.Request) {
 	leds := []LEDInfo{}
@@ -89,16 +130,18 @@ func (h *LEDHandler) GetLED(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize name to prevent path traversal
-	name = filepath.Base(name)
-	ledPath := filepath.Join(h.ledBasePath, name)
+	ledPath, err := h.getSafeLEDPath(name)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid LED name")
+		return
+	}
 
 	if _, err := os.Stat(ledPath); err != nil {
 		api.WriteError(w, -1, "LED not found")
 		return
 	}
 
-	info := LEDInfo{Name: name}
+	info := LEDInfo{Name: filepath.Base(name)}
 
 	if data, err := os.ReadFile(filepath.Join(ledPath, "brightness")); err == nil {
 		val, _ := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -148,9 +191,11 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize name to prevent path traversal
-	name := filepath.Base(req.Name)
-	ledPath := filepath.Join(h.ledBasePath, name)
+	ledPath, err := h.getSafeLEDPath(req.Name)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid LED name")
+		return
+	}
 
 	if _, err := os.Stat(ledPath); err != nil {
 		api.WriteError(w, -1, "LED not found")
@@ -187,7 +232,7 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	api.WriteSuccess(w, map[string]interface{}{"name": name, "status": "updated"})
+	api.WriteSuccess(w, map[string]interface{}{"name": filepath.Base(req.Name), "status": "updated"})
 }
 
 // IsValidLEDTrigger validates LED trigger names
@@ -219,8 +264,13 @@ func (h *LEDHandler) GetLEDTriggers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name = filepath.Base(name)
-	triggerPath := filepath.Join(h.ledBasePath, name, "trigger")
+	ledPath, err := h.getSafeLEDPath(name)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid LED name")
+		return
+	}
+
+	triggerPath := filepath.Join(ledPath, "trigger")
 
 	data, err := os.ReadFile(triggerPath)
 	if err != nil {

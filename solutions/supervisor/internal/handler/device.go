@@ -246,17 +246,38 @@ func (h *DeviceHandler) GetModelFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sanitize path to prevent directory traversal
+	// filepath.Base returns only the filename, stripping directory components
 	name = filepath.Base(name)
 	filePath := filepath.Join(h.modelDir, name)
 
-	// Verify file exists and is under model directory
-	absPath, err := filepath.Abs(filePath)
-	if err != nil || !strings.HasPrefix(absPath, h.modelDir) {
+	// Verify file exists and is under model directory using filepath.Rel
+	// This is the CodeQL-recognized pattern for path traversal prevention
+	absModelDir, err := filepath.Abs(h.modelDir)
+	if err != nil {
 		api.WriteError(w, -1, "Invalid model path")
 		return
 	}
 
-	http.ServeFile(w, r, filePath)
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid model path")
+		return
+	}
+
+	// Use filepath.Rel to verify the path is within modelDir
+	rel, err := filepath.Rel(absModelDir, absPath)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid model path")
+		return
+	}
+
+	// Reject any path that escapes the model directory
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		api.WriteError(w, -1, "Invalid model path")
+		return
+	}
+
+	http.ServeFile(w, r, absPath)
 }
 
 // UploadModel handles model file uploads.

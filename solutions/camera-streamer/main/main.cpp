@@ -21,6 +21,8 @@ extern "C" {
 #include "mongoose.h"
 }
 
+#include "relay_forwarder.h"
+
 #define TAG "camera-streamer"
 #define WS_PORT "8765"
 #define MAX_QUEUE_SIZE 30  // Drop frames if queue gets too large
@@ -44,6 +46,7 @@ typedef struct {
 static volatile bool g_running = true;
 static struct mg_mgr g_mgr;
 static channel_state_t g_channels[NUM_CHANNELS];
+static RelayForwarder* g_relay_forwarder = nullptr;
 
 // Signal handler for graceful shutdown
 static void signal_handler(int signo) {
@@ -105,8 +108,6 @@ static void ws_handler(struct mg_connection *c, int ev, void *ev_data) {
         int channel = get_connection_channel(c);
         std::lock_guard<std::mutex> lock(g_channels[channel].clients_mutex);
         g_channels[channel].ws_clients.insert(c);
-        printf("%s: WebSocket client connected to CH%d (%zu total)\n", 
-               TAG, channel, g_channels[channel].ws_clients.size());
     } else if (ev == MG_EV_CLOSE || ev == MG_EV_ERROR) {
         // Remove from all channels (client can only be in one, but check all to be safe)
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
@@ -114,8 +115,6 @@ static void ws_handler(struct mg_connection *c, int ev, void *ev_data) {
             auto it = g_channels[ch].ws_clients.find(c);
             if (it != g_channels[ch].ws_clients.end()) {
                 g_channels[ch].ws_clients.erase(it);
-                printf("%s: WebSocket client disconnected from CH%d (%zu remaining)\n", 
-                       TAG, ch, g_channels[ch].ws_clients.size());
                 break;
             }
         }
@@ -189,8 +188,7 @@ static int video_frame_callback(void* pData, void* pArgs, void* pUserData) {
             meta.fps = channel->params.fps;
 
             if (video_shm_producer_write(&channel->shm_producer, frame_data, frame_len, &meta) < 0) {
-                printf("%s: WARNING: Failed to write frame to shared memory CH%d\n", 
-                       TAG, channel->channel_id);
+                // Failed to write frame to shared memory - silent drop
             }
         }
 
@@ -202,6 +200,12 @@ static int video_frame_callback(void* pData, void* pArgs, void* pUserData) {
         buffer[0] = (uint8_t)channel->channel_id;
         memcpy(buffer + 1, frame_data, frame_len);
         memcpy(buffer + 1 + frame_len, &timestamp, 8);
+
+        // Forward to relay server (after local WebSocket queuing)
+        if (g_relay_forwarder && g_relay_forwarder->isConnected()) {
+            // Send frame data to relay
+            g_relay_forwarder->sendFrame(frame_data, frame_len, is_keyframe);
+        }
 
         // Queue frame for main thread to send
         {
@@ -226,19 +230,13 @@ static int init_channel(channel_state_t* channel, video_ch_index_t ch_id,
     channel->shm_enabled = false;
     
     // Initialize shared memory IPC with channel-specific name
-    printf("%s: Initializing shared memory for CH%d at /video_stream_ch%d\n", TAG, ch_id, ch_id);
-    
     if (video_shm_producer_init_channel(&channel->shm_producer, ch_id) != 0) {
         fprintf(stderr, "%s: WARNING: Failed to initialize shared memory for CH%d\n", TAG, ch_id);
     } else {
         channel->shm_enabled = true;
-        printf("%s: Shared memory IPC enabled for CH%d\n", TAG, ch_id);
     }
     
     // Configure video channel
-    printf("%s: Configuring CH%d: %dx%d @ %dfps H.264\n", 
-           TAG, ch_id, params->width, params->height, params->fps);
-    
     if (setupVideo(ch_id, params) != 0) {
         fprintf(stderr, "%s: Failed to setup CH%d\n", TAG, ch_id);
         if (channel->shm_enabled) {
@@ -255,8 +253,6 @@ static int init_channel(channel_state_t* channel, video_ch_index_t ch_id,
 
 // Cleanup a single channel
 static void cleanup_channel(channel_state_t* channel) {
-    printf("%s: Cleaning up CH%d...\n", TAG, channel->channel_id);
-    
     // Clear frame queue
     {
         std::lock_guard<std::mutex> lock(channel->queue_mutex);
@@ -315,8 +311,26 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    // Initialize relay forwarder if configured
+    const char* relay_url = std::getenv("RELAY_URL");
+    const char* camera_id = std::getenv("CAMERA_ID");
+    const char* relay_token = std::getenv("RELAY_TOKEN");
+    
+    if (relay_url && camera_id) {
+        g_relay_forwarder = new RelayForwarder(
+            relay_url,
+            camera_id,
+            relay_token ? relay_token : ""
+        );
+        
+        if (!g_relay_forwarder->start()) {
+            fprintf(stderr, "%s: Failed to start relay forwarder\n", TAG);
+            delete g_relay_forwarder;
+            g_relay_forwarder = nullptr;
+        }
+    }
+
     // Initialize video subsystem
-    printf("%s: Initializing video subsystem...\n", TAG);
     if (initVideo() != 0) {
         fprintf(stderr, "%s: Failed to initialize video\n", TAG);
         return -1;
@@ -350,7 +364,6 @@ int main(int argc, char* argv[]) {
     char url[64];
     snprintf(url, sizeof(url), "http://0.0.0.0:%s", WS_PORT);
     
-    printf("%s: Starting WebSocket server on %s\n", TAG, url);
     struct mg_connection *listen_conn = mg_http_listen(&g_mgr, url, ws_handler, NULL);
     
     if (listen_conn == NULL) {
@@ -360,7 +373,6 @@ int main(int argc, char* argv[]) {
     }
 
     // Start video streaming
-    printf("%s: Starting video streams...\n", TAG);
     if (startVideo() != 0) {
         fprintf(stderr, "%s: Failed to start video streams\n", TAG);
         mg_mgr_free(&g_mgr);
@@ -368,10 +380,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    printf("%s: Multi-channel camera streamer is running\n", TAG);
-    printf("%s: CH0: 1920x1080@30fps (High) - ws://<device-ip>:%s/?channel=0\n", TAG, WS_PORT);
-    printf("%s: CH1: 1280x720@30fps (Medium) - ws://<device-ip>:%s/?channel=1\n", TAG, WS_PORT);
-    printf("%s: CH2: 640x480@15fps (Low) - ws://<device-ip>:%s/?channel=2\n", TAG, WS_PORT);
+    printf("%s: Camera streamer running on port %s\n", TAG, WS_PORT);
     printf("%s: Press Ctrl+C to stop\n", TAG);
 
     // Main event loop - process both mongoose events AND frame queues
@@ -381,7 +390,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
-    printf("%s: Cleaning up...\n", TAG);
+    printf("%s: Shutting down...\n", TAG);
+    
+    // Cleanup relay forwarder
+    if (g_relay_forwarder) {
+        g_relay_forwarder->stop();
+        delete g_relay_forwarder;
+        g_relay_forwarder = nullptr;
+    }
     
     // Cleanup all channels
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {

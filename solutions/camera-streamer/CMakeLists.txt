@@ -100,6 +100,7 @@ link_directories(${SDK_LIB})
 # Build executable directly
 add_executable(camera-streamer
     main/main.cpp
+    main/relay_forwarder.cpp
     ../../components/sophgo/video/video.c
     ../../components/sophgo/video/src/video_shm.c
     ${MONGOOSE_SRC}

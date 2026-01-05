@@ -131,8 +131,6 @@ int video_shm_producer_write(video_shm_producer_t* producer,
     if (sem_trywait(producer->sem_write) != 0) {
         /* Lock busy - drop frame to maintain real-time performance */
         producer->shm->dropped_frames++;
-        LOG_DEBUG("Frame dropped (write lock busy), total=%u", 
-                  producer->shm->dropped_frames);
         return 0;  /* Not an error - just dropped */
     }
 
@@ -158,9 +156,6 @@ int video_shm_producer_write(video_shm_producer_t* producer,
     /* Release write lock and signal readers */
     sem_post(producer->sem_write);
     sem_post(producer->sem_read);
-
-    LOG_DEBUG("Frame written: seq=%u, size=%u, idx=%u, keyframe=%d",
-              slot->meta.sequence, size, idx, slot->meta.is_keyframe);
 
     return 0;
 }
@@ -312,9 +307,6 @@ int video_shm_consumer_read(video_shm_consumer_t* consumer,
         LOG_DEBUG("Consumer %u missed %u frames", consumer->reader_id, missed);
     }
     consumer->last_sequence = current_count;
-
-    LOG_DEBUG("Frame read: seq=%u, size=%u, idx=%u", 
-              meta->sequence, meta->size, idx);
 
     return meta->size;
 }

@@ -18,8 +18,8 @@ import useConfigStore from "@/store/config";
 import { factoryResetApi, setDevicePowerApi, formatSDCardApi } from "@/api/device/index";
 
 const channelList = [
-  { label: "Self-Host", value: DeviceChannleMode.Self },
-  { label: "Seeed-Official", value: DeviceChannleMode.Official },
+  { label: "Self Hosted", value: DeviceChannleMode.Self },
+  { label: "TPR Official", value: DeviceChannleMode.Official },
 ];
 const infoList = [
   { label: "Serial Number", key: "sn" },

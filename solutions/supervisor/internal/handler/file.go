@@ -60,7 +60,35 @@ func isValidPath(path string) bool {
 	if path == "." || path == ".." {
 		return false
 	}
-	if strings.Contains(path, "../") || strings.Contains(path, "..\\") {
+
+	// Reject absolute paths
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+
+	// Check for path traversal patterns including encoded versions
+	// Check multiple times to catch double-encoding
+	checkPath := path
+	for i := 0; i < 3; i++ {
+		// Decode URL encoding
+		if decoded, err := url.QueryUnescape(checkPath); err == nil {
+			checkPath = decoded
+		}
+		// Also check for backslash encoding
+		checkPath = strings.ReplaceAll(checkPath, "%5c", "\\")
+		checkPath = strings.ReplaceAll(checkPath, "%5C", "\\")
+	}
+
+	// Check for various traversal patterns
+	if strings.Contains(checkPath, "..") {
+		return false
+	}
+	if strings.Contains(checkPath, "\\") {
+		return false
+	}
+
+	// Check for null bytes (path truncation attack)
+	if strings.Contains(path, "\x00") {
 		return false
 	}
 
@@ -71,6 +99,7 @@ func isValidPath(path string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -94,10 +123,42 @@ func (h *FileHandler) getFullPath(relativePath, storage string) string {
 	if storage == "sd" {
 		baseDir = h.sdDir
 	}
-	if relativePath == "" {
-		return baseDir
+
+	// Resolve base directory to an absolute path
+	baseDirAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		// If we cannot resolve, fall back to the original baseDir
+		baseDirAbs = baseDir
 	}
-	return filepath.Join(baseDir, relativePath)
+
+	// If no relative path is provided, return the (absolute) base directory
+	if relativePath == "" {
+		return baseDirAbs
+	}
+
+	// Clean the relative path to remove redundant separators and dots
+	cleanRel := filepath.Clean(relativePath)
+
+	// Join and resolve the target path
+	targetPath := filepath.Join(baseDirAbs, cleanRel)
+	targetAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		// On error resolving the target, return the base directory
+		return baseDirAbs
+	}
+
+	// Ensure that the resulting path is within the base directory.
+	// Allow the base directory itself, or any path under it.
+	baseWithSep := baseDirAbs
+	if !strings.HasSuffix(baseWithSep, string(os.PathSeparator)) {
+		baseWithSep += string(os.PathSeparator)
+	}
+	if targetAbs != baseDirAbs && !strings.HasPrefix(targetAbs, baseWithSep) {
+		// Attempted directory traversal or escape; constrain to base directory
+		return baseDirAbs
+	}
+
+	return targetAbs
 }
 
 // jsonBodyCache stores parsed JSON body for a request

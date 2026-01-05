@@ -58,6 +58,13 @@ const App = () => {
     }
   };
 
+  // Clear hash when redirecting to login to prevent redirect loops
+  useEffect(() => {
+    if (!token && window.location.hash && window.location.hash !== '#/') {
+      window.location.hash = '/';
+    }
+  }, [token]);
+
   return (
     <ConfigProvider
       theme={{

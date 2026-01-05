@@ -148,7 +148,7 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize name
+	// Sanitize name to prevent path traversal
 	name := filepath.Base(req.Name)
 	ledPath := filepath.Join(h.ledBasePath, name)
 
@@ -159,6 +159,11 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 
 	// Set trigger if specified
 	if req.Trigger != "" {
+		// Validate trigger value - only allow safe trigger names
+		if !isValidLEDTrigger(req.Trigger) {
+			api.WriteError(w, -1, "Invalid trigger value")
+			return
+		}
 		triggerPath := filepath.Join(ledPath, "trigger")
 		if err := os.WriteFile(triggerPath, []byte(req.Trigger), 0644); err != nil {
 			logger.Error("Failed to set LED trigger: %v", err)
@@ -169,6 +174,11 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 
 	// Set brightness if specified
 	if req.Brightness != nil {
+		// Validate brightness value
+		if *req.Brightness < 0 {
+			api.WriteError(w, -1, "Invalid brightness value")
+			return
+		}
 		brightnessPath := filepath.Join(ledPath, "brightness")
 		if err := os.WriteFile(brightnessPath, []byte(strconv.Itoa(*req.Brightness)), 0644); err != nil {
 			logger.Error("Failed to set LED brightness: %v", err)
@@ -178,6 +188,27 @@ func (h *LEDHandler) SetLED(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteSuccess(w, map[string]interface{}{"name": name, "status": "updated"})
+}
+
+// IsValidLEDTrigger validates LED trigger names
+// Only allows alphanumeric, hyphen, underscore, and brackets
+func isValidLEDTrigger(trigger string) bool {
+	if trigger == "" || len(trigger) > 64 {
+		return false
+	}
+	// Check for invalid characters
+	for _, c := range trigger {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '[' || c == ']') {
+			return false
+		}
+	}
+	// Check for injection patterns
+	if strings.Contains(trigger, "..") || strings.Contains(trigger, "/") ||
+		strings.Contains(trigger, "\\") || strings.Contains(trigger, "\x00") {
+		return false
+	}
+	return true
 }
 
 // GetLEDTriggers returns available LED triggers.

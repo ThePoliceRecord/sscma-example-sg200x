@@ -232,7 +232,6 @@ EXIT:
     if(pDataCtx != NULL) {
         free(pDataCtx);
     }
-    pDataCtx->bRunStatus = false;
 
     return s32Ret;
 }

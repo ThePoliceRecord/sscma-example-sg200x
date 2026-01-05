@@ -4,7 +4,9 @@ import { getToken, clearCurrentUser } from "@/store/user";
 import { isDev } from "@/utils";
 
 // Set baseURL based on environment
-export const baseIP = isDev ? "http://192.168.42.1" : window.location.origin;
+// In production, use empty string for relative URLs (uses same protocol as current page)
+// In dev, use explicit HTTP URL
+export const baseIP = isDev ? "http://192.168.42.1" : "";
 
 // Device communication service
 const supervisorService = axios.create({

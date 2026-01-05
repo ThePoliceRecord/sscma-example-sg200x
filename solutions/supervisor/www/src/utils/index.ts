@@ -22,15 +22,14 @@ export function parseUrlParam(url: string): {} | any {
     if (!search) {
       return {};
     }
-    return JSON.parse(
-      '{"' +
-        decodeURIComponent(search)
-          .replace(/"/g, '\\"')
-          .replace(/&/g, '","')
-          .replace(/=/g, '":"')
-          .replace(/\+/g, " ") +
-        '"}'
-    );
+    const params = new URLSearchParams(search);
+    const result: { [key: string]: string } = {};
+    for (const [key, value] of params.entries()) {
+      if (!(key in result)) {
+        result[key] = value;
+      }
+    }
+    return result;
   } catch (error) {
     return {};
   }

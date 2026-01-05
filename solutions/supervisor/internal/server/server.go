@@ -119,13 +119,6 @@ func (s *Server) Start() error {
 // httpsRedirectHandler returns a handler that redirects all HTTP requests to HTTPS.
 func (s *Server) httpsRedirectHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if already HTTPS (via X-Forwarded-Proto header or TLS)
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			// Already HTTPS, don't redirect
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
 		// Build the HTTPS URL
 		host := r.Host
 		// Remove port if present
@@ -268,9 +261,10 @@ func (s *Server) setupRoutes() http.Handler {
 	// Static file server for web UI
 	fileServer := http.FileServer(http.Dir(s.cfg.RootDir))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Handle root path specially to avoid redirect loop
 		if r.URL.Path == "/" {
-			r = r.Clone(r.Context())
-			r.URL.Path = "/index.html"
+			http.ServeFile(w, r, s.cfg.RootDir+"/index.html")
+			return
 		}
 		fileServer.ServeHTTP(w, r)
 	})

@@ -259,16 +259,13 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.Handle("/api/", authMiddleware(apiHandler))
 
 	// Static file server for web UI
+	fileServer := http.FileServer(http.Dir(s.cfg.RootDir))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-
-		// Serve static files
-		filePath := filepath.Join(s.cfg.RootDir, path)
-		if path == "/" {
-			filePath = filepath.Join(s.cfg.RootDir, "index.html")
+		if r.URL.Path == "/" {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/index.html"
 		}
-
-		http.ServeFile(w, r, filePath)
+		fileServer.ServeHTTP(w, r)
 	})
 
 	return mux

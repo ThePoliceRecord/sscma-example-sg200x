@@ -95,6 +95,12 @@ func (h *DeviceHandler) UpdateDeviceName(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Validate device name to prevent injection attacks
+	if !isValidDeviceName(req.DeviceName) {
+		api.WriteError(w, -1, "Invalid device name. Use only alphanumeric characters, hyphens, and underscores (max 63 characters)")
+		return
+	}
+
 	if err := device.UpdateDeviceName(req.DeviceName); err != nil {
 		api.WriteError(w, -1, "Failed to update device name")
 		return
@@ -368,9 +374,31 @@ func (h *DeviceHandler) SetTimezone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize timezone input to prevent path traversal
+	// Only allow alphanumeric characters, forward slashes, underscores, hyphens, and plus signs
+	// This prevents directory traversal attacks like "../../../etc/passwd"
+	if !isValidTimezone(req.Timezone) {
+		api.WriteError(w, -1, "Invalid timezone format")
+		return
+	}
+
 	// Verify timezone exists
 	tzFile := "/usr/share/zoneinfo/" + req.Timezone
-	if _, err := os.Stat(tzFile); err != nil {
+
+	// Resolve to absolute path and verify it's under /usr/share/zoneinfo
+	absPath, err := filepath.Abs(tzFile)
+	if err != nil {
+		api.WriteError(w, -1, "Invalid timezone")
+		return
+	}
+
+	// Ensure the resolved path is still under /usr/share/zoneinfo
+	if !strings.HasPrefix(absPath, "/usr/share/zoneinfo/") {
+		api.WriteError(w, -1, "Invalid timezone path")
+		return
+	}
+
+	if _, err := os.Stat(absPath); err != nil {
 		api.WriteError(w, -1, "Invalid timezone")
 		return
 	}
@@ -378,13 +406,35 @@ func (h *DeviceHandler) SetTimezone(w http.ResponseWriter, r *http.Request) {
 	// Create symlink
 	localtime := "/etc/localtime"
 	os.Remove(localtime)
-	if err := os.Symlink(tzFile, localtime); err != nil {
+	if err := os.Symlink(absPath, localtime); err != nil {
 		logger.Error("Failed to set timezone: %v", err)
 		api.WriteError(w, -1, "Failed to set timezone")
 		return
 	}
 
 	api.WriteSuccess(w, map[string]interface{}{"timezone": req.Timezone})
+}
+
+func isValidTimezone(tz string) bool {
+	if tz == "" || len(tz) > 100 {
+		return false
+	}
+	// Check for path traversal patterns
+	if strings.Contains(tz, "..") || strings.Contains(tz, "\\") {
+		return false
+	}
+	// Only allow safe characters for timezone paths
+	for _, c := range tz {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-' || c == '+') {
+			return false
+		}
+	}
+	// Ensure it doesn't start with slash or contain double slashes
+	if strings.HasPrefix(tz, "/") || strings.Contains(tz, "//") {
+		return false
+	}
+	return true
 }
 
 // GetTimezone returns the current timezone.
@@ -674,4 +724,36 @@ func (h *DeviceHandler) FormatSDCard(w http.ResponseWriter, r *http.Request) {
 		"status":  "success",
 		"message": "SD card formatted successfully with exFAT",
 	})
+}
+
+// isValidDeviceName validates device/hostname according to RFC 1123
+// Allows alphanumeric, hyphens (not at start/end), max 63 chars
+func isValidDeviceName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	// Must start and end with alphanumeric
+	if !isAlphaNumeric(name[0]) || !isAlphaNumeric(name[len(name)-1]) {
+		return false
+	}
+	// Check all characters
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	// Check for injection patterns
+	dangerous := []string{"\n", "\r", ";", "&", "|", "$", "`", "\\", "/", "<", ">", "'", "\""}
+	for _, d := range dangerous {
+		if strings.Contains(name, d) {
+			return false
+		}
+	}
+	return true
+}
+
+// isAlphaNumeric checks if a byte is alphanumeric
+func isAlphaNumeric(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }

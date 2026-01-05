@@ -60,7 +60,35 @@ func isValidPath(path string) bool {
 	if path == "." || path == ".." {
 		return false
 	}
-	if strings.Contains(path, "../") || strings.Contains(path, "..\\") {
+
+	// Reject absolute paths
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+
+	// Check for path traversal patterns including encoded versions
+	// Check multiple times to catch double-encoding
+	checkPath := path
+	for i := 0; i < 3; i++ {
+		// Decode URL encoding
+		if decoded, err := url.QueryUnescape(checkPath); err == nil {
+			checkPath = decoded
+		}
+		// Also check for backslash encoding
+		checkPath = strings.ReplaceAll(checkPath, "%5c", "\\")
+		checkPath = strings.ReplaceAll(checkPath, "%5C", "\\")
+	}
+
+	// Check for various traversal patterns
+	if strings.Contains(checkPath, "..") {
+		return false
+	}
+	if strings.Contains(checkPath, "\\") {
+		return false
+	}
+
+	// Check for null bytes (path truncation attack)
+	if strings.Contains(path, "\x00") {
 		return false
 	}
 
@@ -71,6 +99,7 @@ func isValidPath(path string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 

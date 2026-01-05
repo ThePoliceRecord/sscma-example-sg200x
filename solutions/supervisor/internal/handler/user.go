@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -246,8 +247,24 @@ func (h *UserHandler) AddSSHKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := auth.GetUsername()
+
+	// Validate username to prevent path traversal
+	if !isValidUsername(username) {
+		logger.Error("Invalid username detected: %s", username)
+		api.WriteError(w, -1, "Invalid username")
+		return
+	}
+
 	sshDir := "/home/" + username + "/.ssh"
 	authKeysFile := sshDir + "/authorized_keys"
+
+	// Verify the path is within expected home directory
+	absSSHDir, err := filepath.Abs(sshDir)
+	if err != nil || !strings.HasPrefix(absSSHDir, "/home/"+username+"/") {
+		logger.Error("SSH directory path validation failed")
+		api.WriteError(w, -1, "Failed to add SSH key")
+		return
+	}
 
 	// Ensure .ssh directory exists
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
@@ -302,6 +319,14 @@ func (h *UserHandler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := auth.GetUsername()
+
+	// Validate username to prevent path traversal
+	if !isValidUsername(username) {
+		logger.Error("Invalid username detected: %s", username)
+		api.WriteError(w, -1, "Invalid username")
+		return
+	}
+
 	authKeysFile := "/home/" + username + "/.ssh/authorized_keys"
 
 	// Read current keys
@@ -352,6 +377,12 @@ func isSSHEnabled() bool {
 }
 
 func getSSHKeys(username string) []map[string]interface{} {
+	// Validate username to prevent path traversal
+	if !isValidUsername(username) {
+		logger.Error("Invalid username detected in getSSHKeys: %s", username)
+		return []map[string]interface{}{}
+	}
+
 	authKeysFile := "/home/" + username + "/.ssh/authorized_keys"
 	data, err := os.ReadFile(authKeysFile)
 	if err != nil {
@@ -446,6 +477,35 @@ func isFirstLogin(username string) bool {
 	}
 
 	return false
+}
+
+func isValidUsername(username string) bool {
+	if username == "" || len(username) > 32 {
+		return false
+	}
+	// Check for path traversal patterns
+	if strings.Contains(username, "..") || strings.Contains(username, "/") || strings.Contains(username, "\\") {
+		return false
+	}
+	// Check for special characters that could be used in attacks
+	if strings.ContainsAny(username, "<>:\"|?*;`$&()[]{}'\n\r\t") {
+		return false
+	}
+	// Prevent using system directory names
+	systemNames := []string{".", "..", "etc", "home", "root", "tmp", "var", "bin", "sbin", "usr", "dev", "proc", "sys"}
+	for _, sysName := range systemNames {
+		if username == sysName {
+			return false
+		}
+	}
+	// Only allow alphanumeric, underscore, and hyphen
+	for _, c := range username {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // verifyDefaultPassword checks if the password hash matches the default password "recamera"

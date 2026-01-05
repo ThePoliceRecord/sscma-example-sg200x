@@ -19,7 +19,7 @@ This project uses Nix flakes for a fully reproducible development environment. T
 ```bash
 # Clone both repositories (recommended layout)
 cd ~/projects
-git clone https://github.com/Seeed-Studio/reCamera-OS.git
+git clone https://github.com/ThePoliceRecord/authority-alert-OS.git reCamera-OS
 git clone <sscma-example-repo-url> sscma-example-sg200x
 
 # Enter development environment
@@ -223,7 +223,7 @@ Error: Cannot find flake '../reCamera-OS'
 ```bash
 # Option A: Clone locally (recommended)
 cd ..
-git clone https://github.com/Seeed-Studio/reCamera-OS.git
+git clone https://github.com/ThePoliceRecord/authority-alert-OS.git reCamera-OS
 
 # Option B: Modify flake to use GitHub only
 # Edit inputs.recamera-os.url in flake.nix

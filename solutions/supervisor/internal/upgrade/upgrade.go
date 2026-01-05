@@ -24,12 +24,11 @@ import (
 
 // URLs and file paths
 const (
-	OfficialURL      = "https://github.com/Seeed-Studio/reCamera-OS/releases/latest"
-	OfficialURL2     = "https://files.seeedstudio.com/reCamera"
+	OfficialURL      = "https://github.com/ThePoliceRecord/authority-alert-OS/releases/latest"
 	ChecksumFileName = "sg2002_recamera_emmc_sha256sum.txt"
 	URLFileName      = "url.txt"
 
-	DefaultUpgradeURL = "https://github.com/Seeed-Studio/reCamera-OS/releases/latest"
+	DefaultUpgradeURL = "https://github.com/ThePoliceRecord/authority-alert-OS/releases/latest"
 )
 
 // Partitions
@@ -236,13 +235,8 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 		// Parse GitHub releases URL
 		url, err := m.parseGitHubReleasesURL(OfficialURL)
 		if err != nil {
-			logger.Warning("Failed to parse GitHub URL: %v", err)
-			// Fallback to Seeed URL
-			url, err = m.getSeeedLatestURL()
-			if err != nil {
-				logger.Error("Failed to get Seeed URL: %v", err)
-				return err
-			}
+			logger.Error("Failed to parse GitHub URL: %v", err)
+			return err
 		}
 		checksumURL = url
 		logger.Info("Using official URL: %s", checksumURL)
@@ -309,28 +303,6 @@ func (m *UpgradeManager) parseGitHubReleasesURL(url string) (string, error) {
 	// https://github.com/.../releases/tag/v1.0.0 -> https://github.com/.../releases/download/v1.0.0
 	location = strings.Replace(location, "/tag/", "/download/", 1)
 	return location + "/" + ChecksumFileName, nil
-}
-
-// getSeeedLatestURL gets the latest version URL from Seeed server.
-func (m *UpgradeManager) getSeeedLatestURL() (string, error) {
-	url := OfficialURL2 + "/latest"
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	version := strings.TrimSpace(string(body))
-	if version == "" {
-		return "", fmt.Errorf("empty version from Seeed server")
-	}
-
-	return OfficialURL2 + "/" + version + "/" + ChecksumFileName, nil
 }
 
 // parseVersionInfo parses the Checksum file to extract version information.

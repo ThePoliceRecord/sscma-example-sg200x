@@ -153,12 +153,17 @@ func (h *FileHandler) getFullPath(relativePath, storage string) string {
 	}
 
 	// Ensure that the resulting path is within the base directory.
-	// Allow the base directory itself, or any path under it.
-	baseWithSep := baseDirAbs
-	if !strings.HasSuffix(baseWithSep, string(os.PathSeparator)) {
-		baseWithSep += string(os.PathSeparator)
+	// Use filepath.Rel to compute the relative path from base to target.
+	// This is more robust than string prefix checking for detecting escapes.
+	rel, err := filepath.Rel(baseDirAbs, targetAbs)
+	if err != nil {
+		// On error computing the relative path, constrain to base directory
+		return baseDirAbs
 	}
-	if targetAbs != baseDirAbs && !strings.HasPrefix(targetAbs, baseWithSep) {
+
+	// Reject any path that attempts to traverse outside the base directory.
+	// If rel starts with "..", it means targetAbs is outside baseDirAbs.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		// Attempted directory traversal or escape; constrain to base directory
 		return baseDirAbs
 	}

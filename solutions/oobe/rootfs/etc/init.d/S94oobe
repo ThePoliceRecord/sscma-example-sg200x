@@ -2,7 +2,7 @@
 
 DAEMON=oobe
 DAEMON_PATH=/usr/local/bin
-DAEMON_ARGS="--listen http://0.0.0.0:8081 --root /usr/share/oobe/www"
+DAEMON_ARGS="--listen https://0.0.0.0:8081 --root /usr/share/oobe/www --cert /etc/supervisor/certs/cert.pem --key /etc/supervisor/certs/key.pem"
 
 start() {
     printf 'Starting OOBE Service: '

@@ -23,7 +23,7 @@
         # Toolchain path inside host-tools repo
         toolchainSubdir = "gcc/riscv64-linux-musl-x86_64";
 
-        # Build target for reCamera-OS
+        # Build target for the OS SDK
         buildTarget = "sg2002_recamera_emmc";
         
         # SDK path will be set at runtime from the actual filesystem
@@ -76,14 +76,27 @@
             echo ""
             echo "✓ Toolchain: ${host-tools}/${toolchainSubdir}"
             
-            # Detect SDK at runtime from the actual filesystem
-            # Check for SDK in ../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}
-            SDK_INSTALL_PATH="$PROJECT_ROOT/../reCamera-OS/output/${buildTarget}/install/soc_${buildTarget}"
+            # Detect SDK at runtime from the actual filesystem.
+            # Support both the historical repo name (reCamera-OS) and the newer one (authority-alert-OS).
+            OS_REPO_PATH=""
+            for candidate in \
+              "$PROJECT_ROOT/../authority-alert-OS" \
+              "$PROJECT_ROOT/../authority-alert-os" \
+              "$PROJECT_ROOT/../reCamera-OS" \
+              "$PROJECT_ROOT/../reCamera-os"
+            do
+              if [ -d "$candidate" ]; then
+                OS_REPO_PATH="$candidate"
+                break
+              fi
+            done
+
+            SDK_INSTALL_PATH="$OS_REPO_PATH/output/${buildTarget}/install/soc_${buildTarget}"
             
-            if [ -d "$SDK_INSTALL_PATH" ]; then
+            if [ -n "$OS_REPO_PATH" ] && [ -d "$SDK_INSTALL_PATH" ]; then
               # Check if SDK needs to be extracted
-              SDK_TARBALL="$SDK_INSTALL_PATH/sg2002_reCamera_0.2.3_emmc_sdk.tar.gz"
-              SDK_EXTRACTED_MARKER="$SDK_INSTALL_PATH/sg2002_recamera_emmc"
+              SDK_TARBALL="$(ls -1t "$SDK_INSTALL_PATH"/*_sdk.tar.gz 2>/dev/null | head -n 1)"
+              SDK_EXTRACTED_MARKER="$SDK_INSTALL_PATH/${buildTarget}"
               
               if [ -f "$SDK_TARBALL" ] && [ ! -d "$SDK_EXTRACTED_MARKER" ]; then
                 echo ""
@@ -100,8 +113,8 @@
               if [ -d "$SDK_EXTRACTED_MARKER" ]; then
                 if [ ! -L "$SDK_INSTALL_PATH/cvi_mpi" ]; then
                   echo "🔗 Creating SDK symlinks..."
-                  ln -sf sg2002_recamera_emmc/cvi_mpi "$SDK_INSTALL_PATH/cvi_mpi" 2>/dev/null
-                  ln -sf sg2002_recamera_emmc/osdrv "$SDK_INSTALL_PATH/osdrv" 2>/dev/null
+                  ln -sf "${buildTarget}/cvi_mpi" "$SDK_INSTALL_PATH/cvi_mpi" 2>/dev/null
+                  ln -sf "${buildTarget}/osdrv" "$SDK_INSTALL_PATH/osdrv" 2>/dev/null
                   echo "✓ SDK symlinks created"
                 fi
               fi
@@ -119,12 +132,8 @@
             else
               echo "⚠ No SDK found"
               echo ""
-              echo "Build SDK first from main project:"
-              echo "  cd ../../  # Back to authority-alert root"
-              echo "  nix run .#build"
-              echo ""
-              echo "Or build in reCamera-OS directly:"
-              echo "  cd ../reCamera-OS"
+              echo "Build SDK in the OS repo (sibling directory):"
+              echo "  cd ../authority-alert-OS  # or ../reCamera-OS"
               echo "  nix develop  # Then run docker_build.sh"
             fi
 

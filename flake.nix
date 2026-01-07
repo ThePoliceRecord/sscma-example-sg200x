@@ -41,6 +41,8 @@
             ninja
             gnumake
             pkg-config
+            go
+            nodejs
 
             # Version control
             git

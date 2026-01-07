@@ -6,6 +6,12 @@ import gif from "@/assets/gif/loading.gif";
 
 const totalDuration = 100 * 1000; // 100 seconds
 
+// Translucent card style (matching TPR.css .translucent-card-grey-1)
+const translucentCardStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.9)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+};
+
 const Loading = ({
   onServiceStatusChange,
 }: {
@@ -71,42 +77,71 @@ const Loading = ({
   };
 
   return (
-    <div className="flex justify-center items-center absolute left-0 top-0 right-0 bottom-0 z-100 bg-[#f1f3f5]">
+    <div 
+      className="flex justify-center items-center absolute left-0 top-0 right-0 bottom-0 z-100"
+      style={{
+        backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), url('/brand/blueback.jpeg')`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      }}
+    >
       {serviceStatus == ServiceStatus.STARTING && (
-        <div className="w-1/2">
-          <img className="w-full" src={gif} />
-          {progress > 0 && (
-            <Progress
-              className="p-12 mt-36"
-              percent={progress}
-              strokeColor={"#8FC31F"}
-            />
-          )}
-          <div className="text-16 mx-12 text-center">
-            Please wait for services to start, this may take a moment.
+        <div className="w-full max-w-400 px-24">
+          <div 
+            className="rounded-2xl p-32"
+            style={translucentCardStyle}
+          >
+            <img className="w-full rounded-lg" src={gif} alt="Loading" />
+            {progress > 0 && (
+              <Progress
+                className="mt-24"
+                percent={progress}
+                strokeColor={{
+                  '0%': '#2328bb',
+                  '100%': '#9be564',
+                }}
+                trailColor="rgba(224, 224, 224, 0.3)"
+              />
+            )}
+            <div className="text-15 text-platinum/80 text-center mt-16">
+              Please wait for services to start, this may take a moment.
+            </div>
           </div>
         </div>
       )}
       {serviceStatus == ServiceStatus.FAILED && (
-        <div className="w-1/2">
-          <Alert
-            message="System Error"
-            description={
-              <span>
-                Looks like something went wrong with system. Please check system
-                and restart, or contact{" "}
-                <a
-                  href="mailto:techsupport@seeed.io"
-                  style={{ color: "#4096ff" }}
-                >
-                  techsupport@seeed.io
-                </a>{" "}
-                for support.
-              </span>
-            }
-            type="error"
-            showIcon
-          />
+        <div className="w-full max-w-500 px-24">
+          <div 
+            className="rounded-2xl p-32"
+            style={translucentCardStyle}
+          >
+            <Alert
+              message={
+                <span className="text-18 font-semibold text-white">System Error</span>
+              }
+              description={
+                <span className="text-platinum/80">
+                  Looks like something went wrong with the system. Please check the system
+                  and restart, or contact{" "}
+                  <a
+                    href="mailto:techsupport@seeed.io"
+                    className="text-cobalt hover:text-blue-400 font-medium"
+                  >
+                    techsupport@seeed.io
+                  </a>{" "}
+                  for support.
+                </span>
+              }
+              type="error"
+              showIcon
+              className="rounded-lg"
+              style={{
+                backgroundColor: 'rgba(115, 0, 1, 0.5)',
+                borderColor: 'rgba(115, 0, 1, 0.8)',
+              }}
+            />
+          </div>
         </div>
       )}
     </div>

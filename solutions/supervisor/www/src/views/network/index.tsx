@@ -1,5 +1,5 @@
-import { Button, Form, Switch, Input, Modal } from "antd";
-import { LoadingOutlined, InfoCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Button, Form, Switch, Input, Modal, Empty } from "antd";
+import { LoadingOutlined, InfoCircleOutlined, ReloadOutlined, WifiOutlined, GlobalOutlined } from "@ant-design/icons";
 import WarnImg from "@/assets/images/warn.png";
 import LockImg from "@/assets/images/svg/lock.svg";
 import ConnectedImg from "@/assets/images/svg/connected.svg";
@@ -41,6 +41,35 @@ const titleObj = {
   [FormType.Password]: "Password",
   [FormType.Disabled]: "Disable Wi-Fi",
 };
+
+// Translucent card style (matching TPR.css .translucent-card-grey-1)
+const translucentCardStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.85)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+  borderRadius: '12px',
+};
+
+// Modal styles (matching TPR.css .translucent-card-grey-1)
+const modalContentStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.95)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+};
+
+const modalStyles = {
+  content: modalContentStyle,
+  header: {
+    backgroundColor: 'transparent',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+  body: {
+    backgroundColor: 'transparent',
+  },
+  footer: {
+    backgroundColor: 'transparent',
+    borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+};
+
 function Network() {
   const {
     state,
@@ -58,188 +87,227 @@ function Network() {
   } = useData();
 
   return (
-    <div className="px-16 pb-24">
-      <div className="text-24 font-bold mt-24">Internet</div>
-      {!state.wifiChecked &&
-        state.etherStatus === NetworkStatus.Disconnected && (
-          <div className="flex mt-10">
-            <img className="w-24" src={WarnImg} alt="" />
-            <span className="ml-12 self-center text-16">
-              Not connected to a network
-            </span>
-          </div>
-        )}
-      {/* Ethernet */}
-      {state.etherInfo && (
-        <div className="mt-30">
-          <div className="font-bold text-18 mb-20">Internet</div>
-          <div className="border-b text-16">
+    <div className="p-16">
+      {/* Page Header */}
+      <div className="mb-24">
+        <div className="flex items-center gap-12 mb-8">
+          <GlobalOutlined style={{ fontSize: 28, color: '#9be564' }} />
+          <h1 className="text-28 font-bold text-platinum m-0">Network</h1>
+        </div>
+        {!state.wifiChecked &&
+          state.etherStatus === NetworkStatus.Disconnected && (
+            <div className="flex items-center mt-12 px-16 py-12 rounded-lg" style={{ backgroundColor: 'rgba(255, 77, 79, 0.2)' }}>
+              <img className="w-20" src={WarnImg} alt="" />
+              <span className="ml-12 text-14 text-red-400">
+                Not connected to any network
+              </span>
+            </div>
+          )}
+      </div>
+
+      {/* Ethernet Section */}
+      <div className="mb-24">
+        <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">Ethernet</div>
+        <div className="p-20" style={translucentCardStyle}>
+          {state.etherInfo ? (
             <div
-              className="flex justify-between border-t py-10"
+              className="flex justify-between items-center cursor-pointer"
               onClick={onClickEthernetItem}
             >
-              <span className="flex flex-1 truncate">
-                {state.etherStatus === NetworkStatus.Connected && (
-                  <img className="w-18 mr-12" src={ConnectedImg} alt="" />
-                )}
-                <img className="w-18 mr-12" src={WireImg} alt="" />
-                <span className="self-center truncate">Ethernet</span>
-              </span>
+              <div className="flex items-center flex-1 min-w-0">
+                <div className="w-40 h-40 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: 'rgba(155, 229, 100, 0.2)' }}>
+                  <img className="w-20 invert" src={WireImg} alt="" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center">
+                    <span className="text-16 font-medium text-platinum truncate">Ethernet</span>
+                    {state.etherStatus === NetworkStatus.Connected && (
+                      <span className="ml-8 px-8 py-2 text-10 rounded-full bg-cta/20 text-cta">Connected</span>
+                    )}
+                  </div>
+                  <div className="text-12 text-platinum/50 mt-2">
+                    {state.etherStatus === NetworkStatus.Connected ? 'Wired connection active' : 'Cable not connected'}
+                  </div>
+                </div>
+              </div>
+              <Button
+                type="text"
+                size="small"
+                icon={<InfoCircleOutlined style={{ color: '#e0e0e0', fontSize: 18 }} />}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onClickEthernetItem();
+                }}
+              />
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center">
+                <div className="w-48 h-48 rounded-full flex items-center justify-center mx-auto mb-12" style={{ backgroundColor: 'rgba(224, 224, 224, 0.1)' }}>
+                  <img className="w-24 opacity-40 invert" src={WireImg} alt="" />
+                </div>
+                <div className="text-14 text-platinum/50">No Ethernet adapter detected</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Wi-Fi Section */}
+      {state.wifiEnable !== WifiEnable.Disable && (
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">Wi-Fi</div>
+          
+          {/* Wi-Fi Enable Toggle Card */}
+          <div className="p-20 mb-16" style={translucentCardStyle}>
+            <div className="flex justify-between items-center">
               <div className="flex items-center">
+                <div className="w-40 h-40 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: state.wifiChecked ? 'rgba(35, 40, 187, 0.3)' : 'rgba(224, 224, 224, 0.1)' }}>
+                  <WifiOutlined style={{ fontSize: 20, color: state.wifiChecked ? '#9be564' : '#e0e0e0' }} />
+                </div>
+                <div>
+                  <div className="text-16 font-medium text-platinum">Wi-Fi</div>
+                  <div className="text-12 text-platinum/50 mt-2">
+                    {state.wifiChecked ? 'Wireless networking enabled' : 'Wireless networking disabled'}
+                  </div>
+                </div>
+              </div>
+              <Switch
+                checked={state.wifiChecked}
+                onChange={onSwitchEnabledWifi}
+              />
+            </div>
+          </div>
+
+          {/* Connected Networks */}
+          {state.wifiChecked && state.connectedWifiInfoList.length > 0 && (
+            <div className="mb-16">
+              <div className="text-12 text-platinum/50 uppercase tracking-wide mb-8 px-4">My Networks</div>
+              <div className="p-16" style={translucentCardStyle}>
+                {state.connectedWifiInfoList.map((wifiItem, index) => (
+                  <div
+                    className={`flex justify-between items-center py-12 cursor-pointer ${index > 0 ? 'border-t border-white/10' : ''}`}
+                    key={index}
+                    onClick={() => onClickWifiItem(wifiItem)}
+                  >
+                    <div className="flex items-center flex-1 min-w-0">
+                      <div className="w-32 h-32 rounded-full flex items-center justify-center mr-12" style={{ backgroundColor: 'rgba(35, 40, 187, 0.3)' }}>
+                        {wifiItem.status === NetworkStatus.Connecting ? (
+                          <LoadingOutlined style={{ color: '#9be564', fontSize: 16 }} />
+                        ) : (
+                          <img className="w-16 invert" src={wifiImg[getSignalIcon(wifiItem.signal)]} alt="" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center">
+                          <span className="text-15 font-medium text-platinum truncate">{wifiItem.ssid}</span>
+                          {wifiItem.status === NetworkStatus.Connected && (
+                            <img className="w-14 ml-8 invert" src={ConnectedImg} alt="" />
+                          )}
+                        </div>
+                        <div className="text-11 text-platinum/50 mt-1">
+                          {wifiItem.status === NetworkStatus.Connected ? 'Connected' : 
+                           wifiItem.status === NetworkStatus.Connecting ? 'Connecting...' : 'Saved'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-8">
+                      {wifiItem.auth === WifiAuth.Need && (
+                        <img className="w-14 opacity-60 invert" src={LockImg} alt="" />
+                      )}
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<InfoCircleOutlined style={{ color: '#e0e0e0', fontSize: 16 }} />}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onClickWifiInfo(wifiItem);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Available Networks */}
+          {state.wifiChecked && (
+            <div>
+              <div className="flex justify-between items-center mb-8 px-4">
+                <div className="text-12 text-platinum/50 uppercase tracking-wide">Available Networks</div>
                 <Button
                   type="text"
                   size="small"
-                  icon={<InfoCircleOutlined />}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onClickEthernetItem();
-                  }}
-                />
+                  icon={
+                    state.refreshLoading ? 
+                      <LoadingOutlined style={{ color: '#9be564', fontSize: 14 }} /> : 
+                      <ReloadOutlined style={{ color: '#e0e0e0', fontSize: 14 }} />
+                  }
+                  onClick={onRefreshNetworks}
+                  disabled={state.refreshLoading}
+                >
+                  <span className="text-12 text-platinum/60">Refresh</span>
+                </Button>
+              </div>
+              <div className="p-16" style={translucentCardStyle}>
+                {state.wifiInfoList.length > 0 ? (
+                  state.wifiInfoList.map((wifiItem, index) => (
+                    <div
+                      className={`flex justify-between items-center py-12 cursor-pointer hover:bg-white/5 -mx-8 px-8 rounded-lg transition-colors ${index > 0 ? 'border-t border-white/10 mt-2 pt-14' : ''}`}
+                      key={index}
+                      onClick={() => onClickWifiItem(wifiItem)}
+                    >
+                      <div className="flex items-center flex-1 min-w-0">
+                        <div className="w-32 h-32 rounded-full flex items-center justify-center mr-12" style={{ backgroundColor: 'rgba(224, 224, 224, 0.1)' }}>
+                          {wifiItem.status === NetworkStatus.Connecting ? (
+                            <LoadingOutlined style={{ color: '#9be564', fontSize: 16 }} />
+                          ) : (
+                            <img className="w-16 invert" src={wifiImg[getSignalIcon(wifiItem.signal)]} alt="" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-15 text-platinum truncate block">{wifiItem.ssid}</span>
+                          <div className="text-11 text-platinum/40 mt-1">
+                            {wifiItem.auth === WifiAuth.Need ? 'Secured' : 'Open'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-8">
+                        {wifiItem.auth === WifiAuth.Need && (
+                          <img className="w-14 opacity-40 invert" src={LockImg} alt="" />
+                        )}
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<InfoCircleOutlined style={{ color: '#e0e0e0', fontSize: 16 }} />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onClickWifiInfo(wifiItem);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="py-16">
+                    <Empty 
+                      description={
+                        <span className="text-platinum/50">
+                          {state.refreshLoading ? 'Scanning for networks...' : 'No networks found'}
+                        </span>
+                      }
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    />
+                  </div>
+                )}
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
-
-      {/* WiFi switch: displayed when wifiEnable !== 2, state controlled by state.wifiChecked */}
-      {state.wifiEnable !== WifiEnable.Disable && (
-        <div className="mt-30">
-          <div className="flex justify-between mb-20">
-            <div className="font-bold text-18">Enable Wi-Fi</div>
-            <Switch
-              checked={state.wifiChecked}
-              onChange={onSwitchEnabledWifi}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* My Networks - connected WiFi list (shown when Wi-Fi is enabled) */}
-      {state.wifiChecked && state.connectedWifiInfoList.length > 0 && (
-        <div className="mt-30">
-          <div className="font-bold text-18 mb-20">My Networks</div>
-          <div className="border-b text-16">
-            {state.connectedWifiInfoList.map((wifiItem, index) => (
-              <div
-                className="flex justify-between border-t py-10"
-                key={index}
-                onClick={() => onClickWifiItem(wifiItem)}
-              >
-                <span className="flex flex-1 truncate">
-                  <span className="self-center truncate flex items-center">
-                    {wifiItem.status === NetworkStatus.Connecting ? (
-                      <span className="mr-12 flex items-center">
-                        <LoadingOutlined />
-                      </span>
-                    ) : wifiItem.status === NetworkStatus.Connected ? (
-                      <img className="w-18 mr-12" src={ConnectedImg} alt="" />
-                    ) : null}
-                    {wifiItem.ssid}
-                  </span>
-                </span>
-                <div className="flex items-center">
-                  {wifiItem.auth == WifiAuth.Need && (
-                    <div className="px-12">
-                      <img
-                        className="w-18"
-                        src={LockImg}
-                        alt=""
-                        onClick={(event: React.MouseEvent) => {
-                          event.stopPropagation();
-                          onClickWifiItem(wifiItem);
-                        }}
-                      />
-                    </div>
-                  )}
-                  <img
-                    className="w-18"
-                    src={wifiImg[getSignalIcon(wifiItem.signal)]}
-                    alt=""
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<InfoCircleOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onClickWifiInfo(wifiItem);
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Other discovered networks (shown when Wi-Fi is enabled) */}
-      {state.wifiChecked && state.wifiInfoList.length > 0 && (
-        <div className="mt-30">
-          <div className="flex justify-between items-center mb-20">
-            <div className="font-bold text-18">Networks Found</div>
-            <Button
-              type="text"
-              size="small"
-              icon={
-                state.refreshLoading ? <LoadingOutlined /> : <ReloadOutlined />
-              }
-              onClick={onRefreshNetworks}
-              disabled={state.refreshLoading}
-            />
-          </div>
-          <div className="border-b text-16">
-            {state.wifiInfoList.map((wifiItem, index) => (
-              <div
-                className="flex justify-between border-t py-10"
-                key={index}
-                onClick={() => onClickWifiItem(wifiItem)}
-              >
-                <span className="flex flex-1 truncate">
-                  <span className="self-center truncate flex items-center">
-                    {wifiItem.status === NetworkStatus.Connecting ? (
-                      <span className="mr-12 flex items-center">
-                        <LoadingOutlined />
-                      </span>
-                    ) : wifiItem.status === NetworkStatus.Connected ? (
-                      <img className="w-18 mr-12" src={ConnectedImg} alt="" />
-                    ) : null}
-                    {wifiItem.ssid}
-                  </span>
-                </span>
-                <div className="flex items-center">
-                  {wifiItem.auth == WifiAuth.Need && (
-                    <div className="px-12">
-                      <img
-                        className="w-18"
-                        src={LockImg}
-                        alt=""
-                        onClick={(event: React.MouseEvent) => {
-                          event.stopPropagation();
-                          onClickWifiItem(wifiItem);
-                        }}
-                      />
-                    </div>
-                  )}
-                  <img
-                    className="w-18"
-                    src={wifiImg[getSignalIcon(wifiItem.signal)]}
-                    alt=""
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<InfoCircleOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onClickWifiInfo(wifiItem);
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      
+      {/* Password / Disable WiFi Modal */}
       <Modal
         open={state.visible}
         onCancel={toggleVisible}
@@ -247,12 +315,13 @@ function Network() {
         centered
         width="90%"
         style={{ maxWidth: 480 }}
-        title={titleObj[state.formType]}
+        title={<span className="text-platinum">{titleObj[state.formType]}</span>}
         destroyOnClose
+        styles={modalStyles}
       >
         {state.formType === FormType.Disabled && (
           <div>
-            <div className="text-3d text-16 mb-20">
+            <div className="text-platinum/80 text-16 mb-20">
               This action will prevent you from access this web dashboard. Are
               you sure want to turn off it now?
             </div>
@@ -282,7 +351,16 @@ function Network() {
               label=""
               rules={[requiredTrimValidate()]}
             >
-              <Input.Password placeholder="" allowClear maxLength={63} />
+              <Input.Password 
+                placeholder="Enter Wi-Fi password" 
+                allowClear 
+                maxLength={63}
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  borderColor: 'rgba(224, 224, 224, 0.3)',
+                  color: '#e0e0e0',
+                }}
+              />
             </Form.Item>
             <Button
               block
@@ -290,11 +368,13 @@ function Network() {
               htmlType="submit"
               loading={state.submitLoading}
             >
-              Confirm
+              Connect
             </Button>
           </Form>
         )}
       </Modal>
+      
+      {/* WiFi/Ethernet Info Modal */}
       <Modal
         open={state.wifiVisible}
         onCancel={() => {
@@ -308,16 +388,13 @@ function Network() {
         style={{ maxWidth: 480 }}
         closable
         destroyOnClose
+        title={<span className="text-platinum">{state.selectedWifiInfo?.ssid || 'Ethernet'}</span>}
+        styles={modalStyles}
       >
-        <div className="p-20 pr-6">
-          <div className="text-3d pr-14 h-full overflow-y-auto flex-1 flex flex-col justify-between">
-            <div className="flex justify-between">
-              <div className="font-bold text-16 break-words">
-                {state.selectedWifiInfo?.ssid}
-              </div>
-            </div>
+        <div className="pr-6">
+          <div className="pr-14 h-full overflow-y-auto flex-1 flex flex-col justify-between">
             {state.selectedWifiInfo && state.selectedWifiInfo?.ssid && (
-              <div className="flex mt-20">
+              <div className="flex mb-20 gap-12">
                 {state.selectedWifiInfo?.status === NetworkStatus.Connected ? (
                   <>
                     <Button
@@ -336,7 +413,6 @@ function Network() {
                     <Button
                       size="small"
                       type="primary"
-                      style={{ marginLeft: "12px" }}
                       block
                       loading={
                         state.submitLoading &&
@@ -367,7 +443,6 @@ function Network() {
                     <Button
                       size="small"
                       type="primary"
-                      style={{ marginLeft: "12px" }}
                       block
                       loading={
                         state.submitLoading &&
@@ -395,11 +470,12 @@ function Network() {
               </div>
             )}
 
-            <div className="flex-1 mt-20 border-t">
-              <div>
-                <div className="flex justify-between border-b py-6">
-                  <span className="self-center">MAC Address</span>
-                  <span className="text-8d text-black opacity-60">
+            <div className="flex-1 border-t border-white/10 pt-16">
+              <div className="mb-16">
+                <div className="text-12 text-platinum/50 uppercase tracking-wide mb-8">Connection Details</div>
+                <div className="flex justify-between py-8 border-b border-white/10">
+                  <span className="text-14 text-platinum/70">MAC Address</span>
+                  <span className="text-14 text-platinum font-mono">
                     {state.selectedWifiInfo?.macAddress || "N/A"}
                   </span>
                 </div>
@@ -407,39 +483,37 @@ function Network() {
 
               {state.selectedWifiInfo && (
                 <div>
-                  <div className="font-bold border-b mt-24 py-6">
-                    IPV4 ADDRESS
-                  </div>
-                  <div className="flex justify-between border-b py-6">
-                    <span className="self-center">IP Address Assignment</span>
-                    <span className="text-8d text-black opacity-60">
+                  <div className="text-12 text-platinum/50 uppercase tracking-wide mb-8">IPv4 Configuration</div>
+                  <div className="flex justify-between py-8 border-b border-white/10">
+                    <span className="text-14 text-platinum/70">IP Assignment</span>
+                    <span className="text-14 text-platinum">
                       {state.selectedWifiInfo?.ipAssignment ===
                       WifiIpAssignmentRule.Automatic
-                        ? "Automatic"
+                        ? "Automatic (DHCP)"
                         : "Static"}
                     </span>
                   </div>
-                  <div className="flex justify-between border-b py-6">
-                    <span className="self-center">IP Address</span>
-                    <span className="text-8d text-black opacity-60">
+                  <div className="flex justify-between py-8 border-b border-white/10">
+                    <span className="text-14 text-platinum/70">IP Address</span>
+                    <span className="text-14 text-platinum font-mono">
                       {state.selectedWifiInfo?.ip || "N/A"}
                     </span>
                   </div>
-                  <div className="flex justify-between border-b py-6">
-                    <span className="self-center">Subnet Mask</span>
-                    <span className="text-8d text-black opacity-60">
+                  <div className="flex justify-between py-8 border-b border-white/10">
+                    <span className="text-14 text-platinum/70">Subnet Mask</span>
+                    <span className="text-14 text-platinum font-mono">
                       {state.selectedWifiInfo?.subnetMask || "N/A"}
                     </span>
                   </div>
-                  <div className="flex justify-between border-b py-6">
-                    <span className="self-center">DNS 1</span>
-                    <span className="text-8d text-black opacity-60">
+                  <div className="flex justify-between py-8 border-b border-white/10">
+                    <span className="text-14 text-platinum/70">Primary DNS</span>
+                    <span className="text-14 text-platinum font-mono">
                       {state.selectedWifiInfo?.dns1 || "N/A"}
                     </span>
                   </div>
-                  <div className="flex justify-between border-b py-6">
-                    <span className="self-center">DNS 2</span>
-                    <span className="text-8d text-black opacity-60">
+                  <div className="flex justify-between py-8">
+                    <span className="text-14 text-platinum/70">Secondary DNS</span>
+                    <span className="text-14 text-platinum font-mono">
                       {state.selectedWifiInfo?.dns2 || "N/A"}
                     </span>
                   </div>

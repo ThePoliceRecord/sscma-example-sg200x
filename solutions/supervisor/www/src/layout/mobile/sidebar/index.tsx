@@ -44,15 +44,16 @@ function Sidebar() {
       { label: "Power", icon: PowerImg, route: "/power" },
     ],
   ];
+
   return (
     <div className="inline-block">
       <div
-        className="flex p-16 cursor-pointer"
+        className="flex p-16 cursor-pointer text-white hover:opacity-80 transition-opacity"
         onClick={() => {
           setVisible(true);
         }}
       >
-        <MenuOutlined />
+        <MenuOutlined className="text-20" />
       </div>
 
       <Popup
@@ -61,41 +62,66 @@ function Sidebar() {
           setVisible(false);
         }}
         position="left"
-        bodyStyle={{ width: "290px" }}
+        bodyStyle={{ 
+          width: "290px",
+          backgroundColor: 'rgba(31, 31, 27, 0.95)',
+          boxShadow: '4px 0 16px rgba(0, 0, 0, 0.5)',
+        }}
       >
-        <div className="pt-80 flex flex-col h-full">
-          <div className="font-bold text-24 pl-40 pb-24 truncate pr-20">
-            {deviceInfo.deviceName}
+        <div className="pt-60 flex flex-col h-full">
+          {/* Header Section */}
+          <div 
+            className="px-24 pb-20"
+            style={{
+              backgroundColor: 'rgba(35, 40, 187, 0.9)',
+              marginTop: '-60px',
+              paddingTop: '60px',
+            }}
+          >
+            <div className="font-bold text-22 text-white truncate pr-20">
+              {deviceInfo.deviceName}
+            </div>
+            <div className="text-14 text-white opacity-70 mt-4">
+              {deviceInfo.ip}
+            </div>
           </div>
-          <div className="border-t flex-1">
+          
+          {/* Menu Section - Translucent Dark */}
+          <div className="flex-1 pt-16 overflow-y-auto">
             {menuList.map((item, index) => {
               return (
                 <div key={index}>
-                  <div className={`${index && "border-t"}  mx-20`}></div>
-                  <div className={`py-14`}>
+                  {index > 0 && (
+                    <div className="border-t border-white/10 mx-20 my-8"></div>
+                  )}
+                  <div className="py-8">
                     {item.map((citem, cindex) => {
+                      const isActive = currentRoute === citem.route;
                       return (
                         (deviceInfo.isReCamera || !citem.judgeApp) && (
                           <div
-                            className={`px-40 py-10 text-17 flex ${
-                              currentRoute === citem.route ? "active" : ""
+                            className={`mx-12 px-20 py-12 text-16 flex items-center rounded-lg cursor-pointer transition-all duration-fast ${
+                              isActive 
+                                ? "text-white" 
+                                : "text-platinum hover:bg-white/10"
                             }`}
+                            style={isActive ? {
+                              backgroundColor: 'rgba(3, 68, 255, 0.6)',
+                              boxShadow: '0 2px 8px rgba(3, 68, 255, 0.4)',
+                            } : undefined}
                             key={`${index}${cindex}`}
-                            style={{
-                              background:
-                                currentRoute === citem.route ? "#ECF4D9" : "",
-                            }}
                             onClick={() => {
                               navigate(citem.route);
                               setVisible(false);
                             }}
                           >
                             <img
-                              className="w-24 h-24 mr-12"
+                              className={`w-22 h-22 mr-12 ${isActive ? "invert brightness-200" : "opacity-80"}`}
                               src={citem.icon}
                               alt=""
+                              style={!isActive ? { filter: 'invert(0.9)' } : undefined}
                             />
-                            <span>{citem.label}</span>
+                            <span className="font-medium">{citem.label}</span>
                           </div>
                         )
                       );
@@ -105,14 +131,17 @@ function Sidebar() {
               );
             })}
           </div>
-          <div className="border-t mx-20"></div>
-          <div className="py-14">
-            <div
-              className="px-40 py-10 text-17 flex cursor-pointer"
-              onClick={handleLogout}
-            >
-              <LogoutOutlined className="w-24 h-24 mr-12 text-24" />
-              <span>Logout</span>
+          
+          {/* Logout Section */}
+          <div className="border-t border-white/10">
+            <div className="py-12 px-12">
+              <div
+                className="px-20 py-12 text-16 flex items-center cursor-pointer text-red-400 hover:bg-red-500/20 rounded-lg transition-all duration-fast"
+                onClick={handleLogout}
+              >
+                <LogoutOutlined className="w-22 h-22 mr-12 text-20" />
+                <span className="font-medium">Logout</span>
+              </div>
             </div>
           </div>
         </div>

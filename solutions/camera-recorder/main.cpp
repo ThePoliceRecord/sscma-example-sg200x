@@ -12,6 +12,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
+#include <atomic>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -29,7 +30,7 @@ private:
     std::string outputDir;
     video_shm_consumer_t consumer;
     uint8_t* buffer;
-    bool running;
+    std::atomic<bool> running;
     bool consumerInitialized;
     
     // libav contexts
@@ -52,6 +53,11 @@ private:
     std::vector<uint8_t> ppsData;
     bool codecConfigured;
     
+    // Configuration
+    int videoWidth;
+    int videoHeight;
+    int videoFramerate;
+    
     // H.264 NAL unit types
     static const uint8_t NAL_TYPE_SPS = 7;
     static const uint8_t NAL_TYPE_PPS = 8;
@@ -67,7 +73,7 @@ private:
 
     // Extract NAL units from frame data (Annex-B format)
     void extractNALUnits(const uint8_t* data, int size) {
-        for (int i = 0; i < size - 4; i++) {
+        for (int i = 0; i <= size - 4; i++) {
             bool isStartCode = false;
             int startCodeLen = 0;
             
@@ -75,7 +81,7 @@ private:
                 if (data[i+2] == 0x01) {
                     isStartCode = true;
                     startCodeLen = 3;
-                } else if (data[i+2] == 0x00 && data[i+3] == 0x01) {
+                } else if (i + 3 < size && data[i+2] == 0x00 && data[i+3] == 0x01) {
                     isStartCode = true;
                     startCodeLen = 4;
                 }
@@ -157,9 +163,22 @@ private:
         memset(videoStream->codecpar->extradata + extradataActualSize, 0, AV_INPUT_BUFFER_PADDING_SIZE);
         videoStream->codecpar->extradata_size = extradataActualSize;
 
-        // Also set for codec context
-        codecCtx->extradata = extradata;
+        // Also set for codec context (allocate separately)
+        codecCtx->extradata = (uint8_t*)av_malloc(extradataActualSize + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!codecCtx->extradata) {
+            std::cerr << "Failed to allocate codec extradata" << std::endl;
+            av_free(videoStream->codecpar->extradata);
+            videoStream->codecpar->extradata = nullptr;
+            videoStream->codecpar->extradata_size = 0;
+            av_free(extradata);
+            return false;
+        }
+        memcpy(codecCtx->extradata, extradata, extradataActualSize);
+        memset(codecCtx->extradata + extradataActualSize, 0, AV_INPUT_BUFFER_PADDING_SIZE);
         codecCtx->extradata_size = extradataActualSize;
+
+        // Free the temporary buffer
+        av_free(extradata);
 
         codecConfigured = true;
         return true;
@@ -186,8 +205,8 @@ private:
         // Configure stream codec parameters directly
         videoStream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
         videoStream->codecpar->codec_id = AV_CODEC_ID_H264;
-        videoStream->codecpar->width = 1920;
-        videoStream->codecpar->height = 1080;
+        videoStream->codecpar->width = videoWidth;
+        videoStream->codecpar->height = videoHeight;
         videoStream->codecpar->format = AV_PIX_FMT_YUV420P;
         
         // Set time base for 30 fps
@@ -208,10 +227,10 @@ private:
 
         codecCtx->codec_id = AV_CODEC_ID_H264;
         codecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
-        codecCtx->width = 1920;
-        codecCtx->height = 1080;
+        codecCtx->width = videoWidth;
+        codecCtx->height = videoHeight;
         codecCtx->time_base = (AVRational){1, 90000};
-        codecCtx->framerate = (AVRational){30, 1};
+        codecCtx->framerate = (AVRational){videoFramerate, 1};
         codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
 
         // Configure codec if we already have SPS/PPS
@@ -345,7 +364,8 @@ public:
     Recorder(const std::string& dir) 
         : outputDir(dir), buffer(nullptr), running(false), consumerInitialized(false),
           formatCtx(nullptr), videoStream(nullptr), codecCtx(nullptr), packet(nullptr),
-          bytesWritten(0), frameCount(0), firstFrameTimestamp(0), lastDts(0), detectedFps(30), codecConfigured(false) {
+          bytesWritten(0), frameCount(0), firstFrameTimestamp(0), lastDts(0), detectedFps(30), codecConfigured(false),
+          videoWidth(1920), videoHeight(1080), videoFramerate(30) {
         memset(&consumer, 0, sizeof(consumer));
     }
 
@@ -379,6 +399,12 @@ public:
         packet = av_packet_alloc();
         if (!packet) {
             std::cerr << "Failed to allocate packet" << std::endl;
+            free(buffer);
+            buffer = nullptr;
+            if (consumerInitialized) {
+                video_shm_consumer_destroy(&consumer);
+                consumerInitialized = false;
+            }
             return false;
         }
 
@@ -439,9 +465,11 @@ public:
                     continue;
                 }
                 
-                // Capture FPS from frame metadata
+                // Capture FPS from frame metadata and update configuration
                 if (meta.fps > 0) {
                     detectedFps = meta.fps;
+                    videoFramerate = meta.fps;
+                    std::cout << "Detected FPS: " << static_cast<int>(detectedFps) << std::endl;
                 }
                 
                 if (!rotateFile()) {
@@ -507,13 +535,14 @@ public:
             int64_t pts = relativeTimeMs * 90;
             
             // For H.264 streams without B-frames (typical for camera), DTS = PTS
-            // Ensure monotonically increasing timestamps
+            // Ensure monotonically increasing DTS to avoid decoder errors
             int64_t dts = pts;
             if (dts <= lastDts) {
-                // Only adjust if not the first frame (lastDts > 0)
-                // This prevents PTS < DTS on the first frame
-                if (lastDts > 0) {
-                    dts = lastDts + 1;  // Ensure monotonic increase
+                // Ensure strictly monotonic increase
+                dts = lastDts + 1;
+                // Also adjust PTS to maintain PTS >= DTS invariant
+                if (pts < dts) {
+                    pts = dts;
                 }
             }
             
@@ -547,7 +576,7 @@ public:
     }
 
     void stop() {
-        running = false;
+        running.store(false);
     }
 };
 

@@ -25,6 +25,8 @@ extern "C" {
 #define WS_PORT "8765"
 #define MAX_QUEUE_SIZE 30  // Drop frames if queue gets too large
 #define NUM_CHANNELS 3     // CH0, CH1, CH2
+#define POLL_TIMEOUT_MS 10 // Mongoose poll timeout
+#define MAX_FRAMES_PER_BATCH 3 // Process up to 10 frames per channel per iteration
 
 // Per-channel state structure
 typedef struct {
@@ -108,15 +110,15 @@ static void ws_handler(struct mg_connection *c, int ev, void *ev_data) {
         printf("%s: WebSocket client connected to CH%d (%zu total)\n", 
                TAG, channel, g_channels[channel].ws_clients.size());
     } else if (ev == MG_EV_CLOSE || ev == MG_EV_ERROR) {
-        // Remove from all channels (client can only be in one, but check all to be safe)
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            std::lock_guard<std::mutex> lock(g_channels[ch].clients_mutex);
-            auto it = g_channels[ch].ws_clients.find(c);
-            if (it != g_channels[ch].ws_clients.end()) {
-                g_channels[ch].ws_clients.erase(it);
+        // Remove from the channel this connection was subscribed to
+        int channel = get_connection_channel(c);
+        if (channel >= 0 && channel < NUM_CHANNELS) {
+            std::lock_guard<std::mutex> lock(g_channels[channel].clients_mutex);
+            auto it = g_channels[channel].ws_clients.find(c);
+            if (it != g_channels[channel].ws_clients.end()) {
+                g_channels[channel].ws_clients.erase(it);
                 printf("%s: WebSocket client disconnected from CH%d (%zu remaining)\n", 
-                       TAG, ch, g_channels[ch].ws_clients.size());
-                break;
+                       TAG, channel, g_channels[channel].ws_clients.size());
             }
         }
     }
@@ -162,18 +164,27 @@ static int video_frame_callback(void* pData, void* pArgs, void* pUserData) {
             continue;
         }
 
-        // For keyframes, prepend SPS+PPS
-        std::vector<uint8_t> combined_frame;
+        // For keyframes, prepend SPS+PPS - allocate persistent buffer
+        uint8_t* final_frame_data = frame_data;
+        uint32_t final_frame_len = frame_len;
+        uint8_t* combined_buffer = nullptr;
+        
         if (is_keyframe) {
             std::lock_guard<std::mutex> lock(channel->header_mutex);
             if (!channel->sps_cache.empty() && !channel->pps_cache.empty()) {
-                // Build: SPS + PPS + Keyframe
-                combined_frame.reserve(channel->sps_cache.size() + channel->pps_cache.size() + frame_len);
-                combined_frame.insert(combined_frame.end(), channel->sps_cache.begin(), channel->sps_cache.end());
-                combined_frame.insert(combined_frame.end(), channel->pps_cache.begin(), channel->pps_cache.end());
-                combined_frame.insert(combined_frame.end(), frame_data, frame_data + frame_len);
-                frame_data = combined_frame.data();
-                frame_len = combined_frame.size();
+                // Allocate persistent buffer for combined frame: SPS + PPS + Keyframe
+                final_frame_len = channel->sps_cache.size() + channel->pps_cache.size() + frame_len;
+                combined_buffer = new uint8_t[final_frame_len];
+                
+                // Copy SPS + PPS + Keyframe into persistent buffer
+                size_t offset = 0;
+                memcpy(combined_buffer + offset, channel->sps_cache.data(), channel->sps_cache.size());
+                offset += channel->sps_cache.size();
+                memcpy(combined_buffer + offset, channel->pps_cache.data(), channel->pps_cache.size());
+                offset += channel->pps_cache.size();
+                memcpy(combined_buffer + offset, frame_data, frame_len);
+                
+                final_frame_data = combined_buffer;
             }
         }
 
@@ -181,27 +192,32 @@ static int video_frame_callback(void* pData, void* pArgs, void* pUserData) {
         if (channel->shm_enabled) {
             video_frame_meta_t meta = {0};
             meta.timestamp_ms = timestamp;
-            meta.size = frame_len;
+            meta.size = final_frame_len;
             meta.is_keyframe = is_keyframe ? 1 : 0;
             meta.codec = 0;  // H.264
             meta.width = channel->params.width;
             meta.height = channel->params.height;
             meta.fps = channel->params.fps;
 
-            if (video_shm_producer_write(&channel->shm_producer, frame_data, frame_len, &meta) < 0) {
+            if (video_shm_producer_write(&channel->shm_producer, final_frame_data, final_frame_len, &meta) < 0) {
                 printf("%s: WARNING: Failed to write frame to shared memory CH%d\n", 
                        TAG, channel->channel_id);
             }
         }
 
         // Allocate buffer for frame: [channel_id(1)] + [frame_data(N)] + [timestamp(8)]
-        size_t total_len = 1 + frame_len + 8;
+        size_t total_len = 1 + final_frame_len + 8;
         uint8_t* buffer = new uint8_t[total_len];
         
         // Pack: channel ID + frame data + timestamp
         buffer[0] = (uint8_t)channel->channel_id;
-        memcpy(buffer + 1, frame_data, frame_len);
-        memcpy(buffer + 1 + frame_len, &timestamp, 8);
+        memcpy(buffer + 1, final_frame_data, final_frame_len);
+        memcpy(buffer + 1 + final_frame_len, &timestamp, 8);
+        
+        // Free combined buffer if it was allocated
+        if (combined_buffer) {
+            delete[] combined_buffer;
+        }
 
         // Queue frame for main thread to send
         {
@@ -276,35 +292,48 @@ static void cleanup_channel(channel_state_t* channel) {
 static void process_frame_queues() {
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
         channel_state_t* channel = &g_channels[ch];
-        std::pair<uint8_t*, size_t> frame;
-        bool has_frame = false;
         
-        // Get frame from queue
-        {
-            std::lock_guard<std::mutex> lock(channel->queue_mutex);
-            if (!channel->frame_queue.empty()) {
-                frame = channel->frame_queue.front();
-                channel->frame_queue.pop();
-                has_frame = true;
+        // Process multiple frames per iteration for better throughput
+        int frames_processed = 0;
+        while (frames_processed < MAX_FRAMES_PER_BATCH) {
+            std::pair<uint8_t*, size_t> frame;
+            bool has_frame = false;
+            
+            // Get frame from queue
+            {
+                std::lock_guard<std::mutex> lock(channel->queue_mutex);
+                if (!channel->frame_queue.empty()) {
+                    frame = channel->frame_queue.front();
+                    channel->frame_queue.pop();
+                    has_frame = true;
+                }
             }
-        }
-        
-        if (!has_frame) {
-            continue;
-        }
-        
-        // Send to all clients subscribed to this channel
-        {
-            std::lock_guard<std::mutex> lock(channel->clients_mutex);
-            for (auto conn : channel->ws_clients) {
+            
+            if (!has_frame) {
+                break; // No more frames for this channel
+            }
+            
+            // Make a copy of client connections to avoid holding mutex during I/O
+            std::vector<struct mg_connection*> clients_copy;
+            {
+                std::lock_guard<std::mutex> lock(channel->clients_mutex);
+                clients_copy.reserve(channel->ws_clients.size());
+                for (auto conn : channel->ws_clients) {
+                    clients_copy.push_back(conn);
+                }
+            }
+            
+            // Send to all clients without holding the mutex
+            for (auto conn : clients_copy) {
                 if (conn && conn->is_websocket) {
                     mg_ws_send(conn, frame.first, frame.second, WEBSOCKET_OP_BINARY);
                 }
             }
+            
+            // Free buffer
+            delete[] frame.first;
+            frames_processed++;
         }
-        
-        // Free buffer
-        delete[] frame.first;
     }
 }
 
@@ -355,6 +384,10 @@ int main(int argc, char* argv[]) {
     
     if (listen_conn == NULL) {
         fprintf(stderr, "%s: Failed to start WebSocket server\n", TAG);
+        // Cleanup channels before deinit
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+            cleanup_channel(&g_channels[ch]);
+        }
         deinitVideo();
         return -1;
     }
@@ -364,6 +397,10 @@ int main(int argc, char* argv[]) {
     if (startVideo() != 0) {
         fprintf(stderr, "%s: Failed to start video streams\n", TAG);
         mg_mgr_free(&g_mgr);
+        // Cleanup channels before deinit
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+            cleanup_channel(&g_channels[ch]);
+        }
         deinitVideo();
         return -1;
     }
@@ -376,7 +413,7 @@ int main(int argc, char* argv[]) {
 
     // Main event loop - process both mongoose events AND frame queues
     while (g_running) {
-        mg_mgr_poll(&g_mgr, 10); // Poll every 10ms
+        mg_mgr_poll(&g_mgr, POLL_TIMEOUT_MS);
         process_frame_queues();   // Send queued frames
     }
 

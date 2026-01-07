@@ -159,8 +159,8 @@ int video_shm_producer_write(video_shm_producer_t* producer,
     sem_post(producer->sem_write);
     sem_post(producer->sem_read);
 
-    LOG_DEBUG("Frame written: seq=%u, size=%u, idx=%u, keyframe=%d",
-              slot->meta.sequence, size, idx, slot->meta.is_keyframe);
+    // LOG_DEBUG("Frame written: seq=%u, size=%u, idx=%u, keyframe=%d",
+    //           slot->meta.sequence, size, idx, slot->meta.is_keyframe);
 
     return 0;
 }

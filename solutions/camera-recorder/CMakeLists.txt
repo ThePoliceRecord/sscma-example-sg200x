@@ -6,7 +6,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     include(${REPO_ROOT}/cmake/toolchain-riscv64-linux-musl-x86_64.cmake)
 endif()
 
-project(sscma-qrcode-reader VERSION 1.0.0 LANGUAGES C CXX)
+project(camera-recorder VERSION 1.0.0 LANGUAGES C CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -53,7 +53,7 @@ else()
         endif()
     endif()
     
-    message(STATUS "Building sscma-qrcode-reader standalone")
+    message(STATUS "Building camera-recorder standalone")
     message(STATUS "SDK: ${SG200X_SDK_PATH}")
     
     set(SDK_INCLUDE ${SG200X_SDK_PATH}/cvi_mpi/include)
@@ -67,12 +67,10 @@ endif()
 # Component paths
 get_filename_component(COMPONENTS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../components" ABSOLUTE)
 set(VIDEO_DIR "${COMPONENTS_ROOT}/sophgo/video")
-set(QUIRC_DIR "${COMPONENTS_ROOT}/quirc")
 
 # Include directories
 include_directories(
     ${VIDEO_DIR}/include
-    ${QUIRC_DIR}
     ${TPU_SDK_INCLUDE}
 )
 
@@ -90,25 +88,19 @@ add_library(video_shm STATIC
     ${VIDEO_DIR}/src/video_shm.c
 )
 
-# Create quirc library
-add_library(quirc STATIC
-    ${QUIRC_DIR}/quirc.c
-    ${QUIRC_DIR}/decode.c
-    ${QUIRC_DIR}/identify.c
-    ${QUIRC_DIR}/version_db.c
-)
-
 # Main executable
-add_executable(sscma-qrcode-reader
-    main/main.cpp
+add_executable(camera-recorder
+    main.cpp
 )
 
 # Link libraries
-target_link_libraries(sscma-qrcode-reader
+target_link_libraries(camera-recorder
     video_shm
-    quirc
+    avformat
     avcodec
     avutil
+    m
+    z
     rt
     pthread
     stdc++
@@ -116,16 +108,16 @@ target_link_libraries(sscma-qrcode-reader
 
 # Custom target for formatting
 add_custom_target(fmt
-    COMMAND clang-format -i main/main.cpp
+    COMMAND clang-format -i main.cpp
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Formatting code with clang-format"
 )
 
 # Install
-install(TARGETS sscma-qrcode-reader RUNTIME DESTINATION /usr/bin)
+install(TARGETS camera-recorder RUNTIME DESTINATION /usr/bin)
 
 # Package
 set(CPACK_GENERATOR "DEB")
-set(CPACK_PACKAGE_NAME "sscma-qrcode-reader")
+set(CPACK_PACKAGE_NAME "camera-recorder")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 include(CPack)

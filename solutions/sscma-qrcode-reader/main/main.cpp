@@ -1,21 +1,16 @@
 #include <iostream>
 #include <signal.h>
 #include <unistd.h>
-#include <quirc.h>
 #include <chrono>
 #include <vector>
 #include <cstring>
+#include <cstdio>
 
 extern "C" {
 #include "video_shm.h"
-}
-
-// FFmpeg headers for H.264 decoding
-extern "C" {
+#include "quirc.h"
 #include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
-#include <libswscale/swscale.h>
 }
 
 #define TAG "sscma-qrcode-reader"
@@ -25,12 +20,13 @@ static volatile bool g_running = true;
 static video_shm_consumer_t g_consumer;
 
 // FFmpeg decoder context
-static const AVCodec* g_codec = nullptr;
-static AVCodecContext* g_codec_ctx = nullptr;
-static AVFrame* g_frame = nullptr;
-static AVFrame* g_frame_gray = nullptr;
-static AVPacket* g_packet = nullptr;
-static struct SwsContext* g_sws_ctx = nullptr;
+struct H264Decoder {
+    const AVCodec* codec;
+    AVCodecContext* codec_ctx;
+    AVFrame* frame;
+    AVPacket* packet;
+    bool initialized;
+};
 
 // Signal handler for graceful shutdown
 static void signal_handler(int signo) {
@@ -40,170 +36,177 @@ static void signal_handler(int signo) {
     }
 }
 
-// Initialize FFmpeg H.264 decoder
-static int init_decoder(int width, int height) {
-    printf("%s: Initializing H.264 decoder for %dx%d\n", TAG, width, height);
+// Initialize H.264 decoder
+static int init_h264_decoder(H264Decoder* decoder, int width, int height) {
+    decoder->initialized = false;
     
     // Find H.264 decoder
-    g_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if (!g_codec) {
+    decoder->codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    if (!decoder->codec) {
         fprintf(stderr, "%s: ERROR: H.264 codec not found\n", TAG);
         return -1;
     }
     
     // Allocate codec context
-    g_codec_ctx = avcodec_alloc_context3(g_codec);
-    if (!g_codec_ctx) {
+    decoder->codec_ctx = avcodec_alloc_context3(decoder->codec);
+    if (!decoder->codec_ctx) {
         fprintf(stderr, "%s: ERROR: Could not allocate codec context\n", TAG);
         return -1;
     }
     
-    // Set codec parameters
-    g_codec_ctx->width = width;
-    g_codec_ctx->height = height;
-    g_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    // Set decoder parameters
+    decoder->codec_ctx->width = width;
+    decoder->codec_ctx->height = height;
+    decoder->codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     
     // Open codec
-    if (avcodec_open2(g_codec_ctx, g_codec, nullptr) < 0) {
+    if (avcodec_open2(decoder->codec_ctx, decoder->codec, NULL) < 0) {
         fprintf(stderr, "%s: ERROR: Could not open codec\n", TAG);
-        avcodec_free_context(&g_codec_ctx);
+        avcodec_free_context(&decoder->codec_ctx);
         return -1;
     }
     
-    // Allocate frames
-    g_frame = av_frame_alloc();
-    g_frame_gray = av_frame_alloc();
-    if (!g_frame || !g_frame_gray) {
-        fprintf(stderr, "%s: ERROR: Could not allocate frames\n", TAG);
+    // Allocate frame
+    decoder->frame = av_frame_alloc();
+    if (!decoder->frame) {
+        fprintf(stderr, "%s: ERROR: Could not allocate frame\n", TAG);
+        avcodec_free_context(&decoder->codec_ctx);
         return -1;
     }
-    
-    // Setup grayscale frame buffer
-    g_frame_gray->format = AV_PIX_FMT_GRAY8;
-    g_frame_gray->width = width;
-    g_frame_gray->height = height;
-    av_frame_get_buffer(g_frame_gray, 0);
     
     // Allocate packet
-    g_packet = av_packet_alloc();
-    if (!g_packet) {
+    decoder->packet = av_packet_alloc();
+    if (!decoder->packet) {
         fprintf(stderr, "%s: ERROR: Could not allocate packet\n", TAG);
+        av_frame_free(&decoder->frame);
+        avcodec_free_context(&decoder->codec_ctx);
         return -1;
     }
     
-    printf("%s: H.264 decoder initialized\n", TAG);
+    decoder->initialized = true;
+    printf("%s: H.264 decoder initialized (%dx%d)\n", TAG, width, height);
     return 0;
 }
 
-// Cleanup FFmpeg resources
-static void cleanup_decoder() {
-    printf("%s: Cleaning up decoder...\n", TAG);
-    
-    if (g_sws_ctx) {
-        sws_freeContext(g_sws_ctx);
-        g_sws_ctx = nullptr;
+// Cleanup decoder
+static void cleanup_h264_decoder(H264Decoder* decoder) {
+    if (decoder->packet) {
+        av_packet_free(&decoder->packet);
     }
-    
-    if (g_packet) {
-        av_packet_free(&g_packet);
+    if (decoder->frame) {
+        av_frame_free(&decoder->frame);
     }
-    
-    if (g_frame_gray) {
-        av_frame_free(&g_frame_gray);
+    if (decoder->codec_ctx) {
+        avcodec_free_context(&decoder->codec_ctx);
     }
+    decoder->initialized = false;
+}
+
+// Convert YUV420P to grayscale (just copy Y plane)
+static void yuv420p_to_grayscale(const AVFrame* frame, uint8_t* gray_data, int width, int height) {
+    // In YUV420P format, the Y plane is the first plane and contains grayscale data
+    // Simply copy the Y plane
+    const uint8_t* y_plane = frame->data[0];
+    int y_linesize = frame->linesize[0];
     
-    if (g_frame) {
-        av_frame_free(&g_frame);
-    }
-    
-    if (g_codec_ctx) {
-        avcodec_free_context(&g_codec_ctx);
+    for (int y = 0; y < height; y++) {
+        memcpy(gray_data + y * width, y_plane + y * y_linesize, width);
     }
 }
 
-// Process H.264 frame and detect QR codes
-static int process_h264_frame(const uint8_t* h264_data, uint32_t size, const video_frame_meta_t* meta) {
-    // Send packet to decoder
-    g_packet->data = const_cast<uint8_t*>(h264_data);
-    g_packet->size = size;
+// Decode H.264 frame to grayscale
+static int decode_h264_frame(H264Decoder* decoder, const uint8_t* h264_data, 
+                              int h264_size, uint8_t* gray_data, int width, int height) {
+    if (!decoder->initialized) {
+        return -1;
+    }
     
-    int ret = avcodec_send_packet(g_codec_ctx, g_packet);
+    // Prepare packet
+    decoder->packet->data = (uint8_t*)h264_data;
+    decoder->packet->size = h264_size;
+    
+    // Send packet to decoder
+    int ret = avcodec_send_packet(decoder->codec_ctx, decoder->packet);
     if (ret < 0) {
-        fprintf(stderr, "%s: ERROR: Failed to send packet to decoder\n", TAG);
+        // It's ok if buffer is full, we'll try next frame
+        if (ret != AVERROR(EAGAIN)) {
+            fprintf(stderr, "%s: ERROR: Error sending packet to decoder: %d\n", TAG, ret);
+        }
         return -1;
     }
     
     // Receive decoded frame
-    ret = avcodec_receive_frame(g_codec_ctx, g_frame);
-    if (ret == AVERROR(EAGAIN)) {
-        // Need more data
-        return 0;
-    } else if (ret < 0) {
-        fprintf(stderr, "%s: ERROR: Failed to receive frame from decoder\n", TAG);
+    ret = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
+    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        // Need more data or end of stream
+        return -1;
+    }
+    if (ret < 0) {
+        fprintf(stderr, "%s: ERROR: Error receiving frame from decoder: %d\n", TAG, ret);
         return -1;
     }
     
-    // Initialize swscale context if needed
-    if (!g_sws_ctx) {
-        g_sws_ctx = sws_getContext(
-            g_frame->width, g_frame->height, (AVPixelFormat)g_frame->format,
-            g_frame_gray->width, g_frame_gray->height, AV_PIX_FMT_GRAY8,
-            SWS_BILINEAR, nullptr, nullptr, nullptr);
-        
-        if (!g_sws_ctx) {
-            fprintf(stderr, "%s: ERROR: Could not initialize swscale context\n", TAG);
-            return -1;
-        }
-    }
+    // Convert YUV420P to grayscale (extract Y plane)
+    yuv420p_to_grayscale(decoder->frame, gray_data, width, height);
     
-    // Convert to grayscale
-    sws_scale(g_sws_ctx, g_frame->data, g_frame->linesize, 0, g_frame->height,
-              g_frame_gray->data, g_frame_gray->linesize);
-    
-    // Initialize Quirc for QR code detection
+    return 0;
+}
+
+// Decode QR codes from grayscale image using quirc
+static int decode_qrcode(const uint8_t* gray_data, int width, int height) {
     struct quirc* qr = quirc_new();
     if (!qr) {
-        fprintf(stderr, "%s: ERROR: Failed to initialize Quirc\n", TAG);
+        fprintf(stderr, "%s: ERROR: Failed to initialize quirc\n", TAG);
         return -1;
     }
-    
-    // Resize Quirc buffer
-    if (quirc_resize(qr, g_frame_gray->width, g_frame_gray->height) < 0) {
+
+    // Resize quirc buffer to match image dimensions
+    if (quirc_resize(qr, width, height) < 0) {
+        fprintf(stderr, "%s: ERROR: Failed to resize quirc buffer\n", TAG);
         quirc_destroy(qr);
-        fprintf(stderr, "%s: ERROR: Failed to resize Quirc buffer\n", TAG);
         return -1;
     }
-    
-    // Copy grayscale data to Quirc buffer
-    uint8_t* buffer = quirc_begin(qr, nullptr, nullptr);
-    for (int y = 0; y < g_frame_gray->height; y++) {
-        memcpy(buffer + y * g_frame_gray->width,
-               g_frame_gray->data[0] + y * g_frame_gray->linesize[0],
-               g_frame_gray->width);
-    }
+
+    // Copy image data to quirc buffer
+    uint8_t* buffer = quirc_begin(qr, NULL, NULL);
+    memcpy(buffer, gray_data, width * height);
     quirc_end(qr);
-    
-    // Detect and decode QR codes
+
+    // Extract and decode QR codes
     int count = quirc_count(qr);
-    if (count > 0) {
-        for (int i = 0; i < count; i++) {
-            struct quirc_code code;
-            struct quirc_data data;
-            quirc_extract(qr, i, &code);
-            
-            if (quirc_decode(&code, &data) == QUIRC_SUCCESS) {
-                printf("%s: QR Code detected: %s\n", TAG, data.payload);
-            }
+    int decoded = 0;
+    
+    for (int i = 0; i < count; i++) {
+        struct quirc_code code;
+        struct quirc_data data;
+        
+        quirc_extract(qr, i, &code);
+        quirc_decode_error_t err = quirc_decode(&code, &data);
+        
+        if (err == QUIRC_SUCCESS) {
+            printf("%s: ✓ QR Code #%d: %s\n", TAG, i + 1, data.payload);
+            printf("%s:   Version: %d, ECC: %c, Mask: %d, Type: %d\n", 
+                   TAG, data.version, 
+                   "MLHQ"[data.ecc_level],
+                   data.mask, 
+                   data.data_type);
+            decoded++;
+        } else {
+            printf("%s: ✗ QR Code #%d: Decode error: %s\n", 
+                   TAG, i + 1, quirc_strerror(err));
         }
     }
     
     quirc_destroy(qr);
-    return 0;
+    return decoded;
 }
 
 int main(int argc, char* argv[]) {
-    printf("%s: SSCMA QR Code Reader (Channel %d)\n", TAG, CHANNEL_ID);
+    printf("%s: SSCMA QR Code Reader with H.264 Decoder (Channel %d)\n", TAG, CHANNEL_ID);
     printf("%s: Reading from camera-streamer shared memory IPC\n", TAG);
+    printf("%s: QR code decoding enabled with quirc library\n", TAG);
+    printf("%s: H.264 decoding enabled with FFmpeg\n", TAG);
+    printf("%s:\n", TAG);
     
     // Setup signal handlers
     signal(SIGINT, signal_handler);
@@ -227,14 +230,34 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     
-    bool decoder_initialized = false;
+    // Allocate grayscale buffer (for decoded frames)
+    uint8_t* gray_buffer = (uint8_t*)malloc(640 * 480);
+    if (!gray_buffer) {
+        fprintf(stderr, "%s: ERROR: Failed to allocate grayscale buffer\n", TAG);
+        free(frame_buffer);
+        video_shm_consumer_destroy(&g_consumer);
+        return -1;
+    }
+    
+    // Initialize H.264 decoder
+    H264Decoder decoder = {0};
+    if (init_h264_decoder(&decoder, 640, 480) < 0) {
+        fprintf(stderr, "%s: ERROR: Failed to initialize H.264 decoder\n", TAG);
+        free(gray_buffer);
+        free(frame_buffer);
+        video_shm_consumer_destroy(&g_consumer);
+        return -1;
+    }
+    
     int frame_count = 0;
-    int qr_detections = 0;
+    int qrcode_detections = 0;
+    int qrcode_decodes = 0;
     
     printf("%s: Waiting for video frames...\n", TAG);
+    printf("%s: QR codes will be detected and decoded automatically\n", TAG);
     printf("%s: Press Ctrl+C to stop\n\n", TAG);
     
-    // Main loop - read frames and detect QR codes
+    // Main loop - read frames and decode QR codes
     while (g_running) {
         video_frame_meta_t meta;
         
@@ -253,28 +276,45 @@ int main(int argc, char* argv[]) {
         
         frame_count++;
         
-        // Initialize decoder on first frame
-        if (!decoder_initialized) {
-            if (init_decoder(meta.width, meta.height) < 0) {
-                fprintf(stderr, "%s: ERROR: Failed to initialize decoder\n", TAG);
-                break;
-            }
-            decoder_initialized = true;
-        }
-        
-        // Process keyframes only for better performance
-        if (meta.is_keyframe) {
-            if (process_h264_frame(frame_buffer, frame_size, &meta) == 0) {
-                qr_detections++;
-            }
-        }
-        
-        // Print statistics every 30 frames
+        // Log frame info periodically
         if (frame_count % 30 == 0) {
+            printf("%s: Frame %d: size=%u bytes, %s, %ux%u@%dfps\n",
+                   TAG, frame_count, meta.size,
+                   meta.is_keyframe ? "KEYFRAME" : "P-frame",
+                   meta.width, meta.height, meta.fps);
+        }
+        
+        // Process keyframes for QR code detection (every 15 frames ~ 1 second at 15fps)
+        if (meta.is_keyframe && frame_count % 15 == 0) {
+            auto start = std::chrono::high_resolution_clock::now();
+            
+            // Decode H.264 frame to grayscale
+            if (decode_h264_frame(&decoder, frame_buffer, frame_size, 
+                                   gray_buffer, meta.width, meta.height) == 0) {
+                // Decode QR codes
+                int num_decoded = decode_qrcode(gray_buffer, meta.width, meta.height);
+                
+                auto end = std::chrono::high_resolution_clock::now();
+                double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+                
+                if (num_decoded > 0) {
+                    qrcode_detections++;
+                    qrcode_decodes += num_decoded;
+                    printf("%s: ═══════════════════════════════════════\n", TAG);
+                    printf("%s: Decoded %d QR code(s) in %.2f ms\n", TAG, num_decoded, elapsed);
+                    printf("%s: ═══════════════════════════════════════\n\n", TAG);
+                } else if (frame_count % 60 == 0) {
+                    printf("%s: No QR codes detected (scan time: %.2f ms)\n", TAG, elapsed);
+                }
+            }
+        }
+        
+        // Print statistics every 60 frames
+        if (frame_count % 60 == 0) {
             uint32_t total, dropped, missed;
             video_shm_consumer_stats(&g_consumer, &total, &dropped, &missed);
-            printf("%s: Frames: %d, Keyframes processed: %d, Total: %u, Dropped: %u, Missed: %u\n",
-                   TAG, frame_count, qr_detections, total, dropped, missed);
+            printf("%s: Stats - Frames: %d, QR Detections: %d, QR Codes: %d, Dropped: %u, Missed: %u\n",
+                   TAG, frame_count, qrcode_detections, qrcode_decodes, dropped, missed);
         }
     }
     
@@ -283,10 +323,14 @@ int main(int argc, char* argv[]) {
     
     uint32_t total, dropped, missed;
     video_shm_consumer_stats(&g_consumer, &total, &dropped, &missed);
-    printf("%s: Final statistics - Total: %u, Dropped: %u, Missed: %u\n",
-           TAG, total, dropped, missed);
+    printf("%s: Final statistics:\n", TAG);
+    printf("%s:   Frames received: %d\n", TAG, frame_count);
+    printf("%s:   QR code detections: %d\n", TAG, qrcode_detections);
+    printf("%s:   Total QR codes decoded: %d\n", TAG, qrcode_decodes);
+    printf("%s:   Total: %u, Dropped: %u, Missed: %u\n", TAG, total, dropped, missed);
     
-    cleanup_decoder();
+    cleanup_h264_decoder(&decoder);
+    free(gray_buffer);
     free(frame_buffer);
     video_shm_consumer_destroy(&g_consumer);
     

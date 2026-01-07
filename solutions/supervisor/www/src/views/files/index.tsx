@@ -12,6 +12,7 @@ import {
   Radio,
   Progress,
 } from "antd";
+import { ExclamationCircleOutlined } from "@ant-design/icons";
 import type {
   BreadcrumbProps,
   MenuProps,
@@ -30,6 +31,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   DownloadOutlined,
+  RightOutlined,
 } from "@ant-design/icons";
 import {
   listFiles,
@@ -45,6 +47,7 @@ import {
   FileEntry,
   UploadProgressInfo,
 } from "@/api/files";
+import { formatSDCardApi } from "@/api/device/index";
 import { getToken } from "@/store/user";
 import { baseIP } from "@/utils/supervisorRequest";
 
@@ -62,6 +65,43 @@ const normalizePath = (path: string) => path.replace(/^\/+/, "");
 const isProtectedRootDir = (name: string) =>
   PROTECTED_ROOT_DIRS.includes(normalizePath(name));
 
+// Translucent card style (matching TPR.css .translucent-card-grey-1)
+const translucentCardStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.85)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+  borderRadius: '12px',
+};
+
+// Modal styles (matching TPR.css .translucent-card-grey-1)
+const modalContentStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.95)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+};
+
+const modalStyles = {
+  content: modalContentStyle,
+  header: {
+    backgroundColor: 'transparent',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+  body: {
+    backgroundColor: 'transparent',
+  },
+  footer: {
+    backgroundColor: 'transparent',
+    borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+  },
+};
+
+// Format file size
+const formatFileSize = (bytes: number | undefined): string => {
+  if (!bytes) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
 const Files = () => {
   // State management
   const [currentStorage, setCurrentStorage] = useState<StorageType>("local");
@@ -69,6 +109,7 @@ const Files = () => {
   const [fileListData, setFileListData] = useState<FileListData | null>(null);
   const [loading, setLoading] = useState(false);
   const [sdCardAvailable, setSdCardAvailable] = useState(false);
+  const [formatSDLoading, setFormatSDLoading] = useState(false);
 
   // File operation state
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -124,6 +165,44 @@ const Files = () => {
       console.error("Failed to check SD card availability:", error);
       setSdCardAvailable(false);
     }
+  };
+
+  // Format SD Card
+  const handleFormatSDCard = () => {
+    Modal.confirm({
+      title: <span className="text-platinum">Format SD Card</span>,
+      icon: <ExclamationCircleOutlined style={{ color: "#ff4d4f" }} />,
+      content: (
+        <div>
+          <p className="text-platinum/80">This will format the SD card with exFAT filesystem.</p>
+          <p className="text-red-500 font-bold mt-8">
+            All data on the SD card will be permanently deleted!
+          </p>
+        </div>
+      ),
+      okText: "Format",
+      okType: "danger",
+      cancelText: "Cancel",
+      centered: true,
+      styles: modalStyles,
+      onOk: async () => {
+        setFormatSDLoading(true);
+        try {
+          const response = await formatSDCardApi();
+          if (response.code === 0) {
+            messageApi.success("SD card formatted successfully");
+            // Refresh file list after formatting
+            loadFileList(currentStorage, "");
+          } else {
+            messageApi.error(response.msg || "Failed to format SD card");
+          }
+        } catch (error) {
+          messageApi.error("Failed to format SD card");
+        } finally {
+          setFormatSDLoading(false);
+        }
+      },
+    });
   };
 
   // Message instance
@@ -191,90 +270,29 @@ const Files = () => {
     };
   };
 
-  // Get file icon (supports custom size)
-  const getFileIcon = (
-    filename: string,
-    isDirectory: boolean,
-    size: number = 42
-  ) => {
+  // Get file icon
+  const getFileIcon = (filename: string, isDirectory: boolean) => {
     if (isDirectory) {
-      return <FolderFilled style={{ color: "#C8DF92", fontSize: 56 }} />;
+      return <FolderFilled style={{ color: "#9be564", fontSize: 24 }} />;
     }
     const ext = filename.split(".").pop()?.toLowerCase();
     switch (ext) {
       case "mp4":
       case "avi":
       case "mov":
-        return (
-          <VideoCameraOutlined style={{ color: "#8c8c8c", fontSize: size }} />
-        );
+        return <VideoCameraOutlined style={{ color: "#60a5fa", fontSize: 24 }} />;
       case "jpg":
       case "jpeg":
       case "png":
       case "gif":
-        return <PictureOutlined style={{ color: "#8c8c8c", fontSize: size }} />;
+        return <PictureOutlined style={{ color: "#f472b6", fontSize: 24 }} />;
       case "onnx":
       case "pth":
       case "pt":
-        return (
-          <ExperimentOutlined style={{ color: "#8c8c8c", fontSize: size }} />
-        );
+        return <ExperimentOutlined style={{ color: "#fbbf24", fontSize: 24 }} />;
       default:
-        return <FileOutlined style={{ color: "#8c8c8c", fontSize: size }} />;
+        return <FileOutlined style={{ color: "#e0e0e0", fontSize: 24 }} />;
     }
-  };
-
-  // Generic tile rendering
-  type TileOptions = {
-    key: string;
-    name: string;
-    isDirectory: boolean;
-    selected: boolean;
-    onClick: () => void;
-    onDoubleClick: () => void;
-    contextMenu?: NonNullable<DropdownProps["menu"]>;
-  };
-
-  const renderTile = ({
-    key,
-    name,
-    isDirectory,
-    selected,
-    onClick,
-    onDoubleClick,
-    contextMenu,
-  }: TileOptions) => {
-    const content = (
-      <div
-        className="flex flex-col items-center cursor-pointer group my-4"
-        onClick={onClick}
-        onDoubleClick={onDoubleClick}
-        title={name}
-      >
-        <div
-          className={`w-[100px] h-[70px] flex items-center justify-center rounded mb-4 ${
-            selected ? "bg-gray-200" : ""
-          }`}
-        >
-          {getFileIcon(name, isDirectory)}
-        </div>
-        <div
-          className={`text-sm truncate px-1 max-w-[100px] ${
-            selected ? "bg-primary text-white rounded" : "text-gray-700"
-          }`}
-        >
-          {name}
-        </div>
-      </div>
-    );
-    if (contextMenu) {
-      return (
-        <Dropdown key={key} menu={contextMenu} trigger={["contextMenu"]}>
-          {content}
-        </Dropdown>
-      );
-    }
-    return <div key={key}>{content}</div>;
   };
 
   // Check if image file
@@ -375,7 +393,7 @@ const Files = () => {
     const rootTitle = currentStorage === "local" ? "/userdata" : "/mnt/sd";
     const items: NonNullable<BreadcrumbProps["items"]> = [
       {
-        title: rootTitle,
+        title: <span className="text-platinum hover:text-white cursor-pointer">{rootTitle}</span>,
         href: "#",
         onClick: (e: React.MouseEvent) => {
           e.preventDefault();
@@ -387,10 +405,10 @@ const Files = () => {
       },
       ...pathParts.map((part, index) => {
         const isLast = index === pathParts.length - 1;
-        if (isLast) return { title: part };
+        if (isLast) return { title: <span className="text-platinum">{part}</span> };
         const newPath = pathParts.slice(0, index + 1).join("/");
         return {
-          title: part,
+          title: <span className="text-platinum hover:text-white cursor-pointer">{part}</span>,
           href: "#",
           onClick: (e: React.MouseEvent) => {
             e.preventDefault();
@@ -490,11 +508,12 @@ const Files = () => {
     }
 
     Modal.confirm({
-      title: `Delete ${isDirectory ? "Folder" : "File"}`,
-      content: `Are you sure you want to delete "${name}"? This action cannot be undone.`,
+      title: <span className="text-platinum">{`Delete ${isDirectory ? "Folder" : "File"}`}</span>,
+      content: <span className="text-platinum/80">{`Are you sure you want to delete "${name}"? This action cannot be undone.`}</span>,
       okText: "Delete",
       okType: "danger",
       cancelText: "Cancel",
+      styles: modalStyles,
       onOk: async () => {
         try {
           const fullPath = currentPath ? `${currentPath}/${name}` : name;
@@ -647,98 +666,143 @@ const Files = () => {
     };
   };
 
+  // Render list item (new list view)
+  const renderListItem = (
+    item: DirectoryEntry | FileEntry,
+    isDirectory: boolean
+  ) => {
+    const selected = selectedFile === item.name;
+    const contextMenu = buildFileMenu(item, isDirectory);
+
+    const handleClick = () => setSelectedFile(item.name);
+    const handleDoubleClick = () => {
+      if (isDirectory) {
+        navigateToDirectory(item.name);
+      } else if (isImageFile(item.name)) {
+        handleImagePreview(item.name);
+      } else if (isVideoFile(item.name)) {
+        handleVideoPreview(item.name);
+      } else {
+        handleDownload(item.name);
+      }
+    };
+
+    return (
+      <Dropdown key={item.name} menu={contextMenu} trigger={["contextMenu"]}>
+        <div
+          className={`flex items-center px-16 py-12 cursor-pointer transition-all duration-150 border-b border-white/10 ${
+            selected
+              ? "bg-primary/30"
+              : "hover:bg-white/5"
+          }`}
+          onClick={handleClick}
+          onDoubleClick={handleDoubleClick}
+        >
+          {/* Icon */}
+          <div className="w-40 flex justify-center">
+            {getFileIcon(item.name, isDirectory)}
+          </div>
+          
+          {/* Name */}
+          <div className="flex-1 ml-12 min-w-0">
+            <div className={`text-15 truncate ${selected ? 'text-white font-medium' : 'text-platinum'}`}>
+              {item.name}
+            </div>
+            {!isDirectory && (
+              <div className="text-12 text-platinum/50 mt-2">
+                {formatFileSize((item as FileEntry).size)}
+              </div>
+            )}
+          </div>
+          
+          {/* Arrow for directories */}
+          {isDirectory && (
+            <RightOutlined className="text-platinum/40 text-12" />
+          )}
+        </div>
+      </Dropdown>
+    );
+  };
+
   // Render file browser interface
   const renderFileBrowser = () => {
     const { directories, files } = getSortedItems();
 
-    const renderDirTile = (dir: DirectoryEntry) => {
-      const selected = selectedFile === dir.name;
-      return renderTile({
-        key: `dir-${dir.name}`,
-        name: dir.name,
-        isDirectory: true,
-        selected,
-        onClick: () => setSelectedFile(dir.name),
-        onDoubleClick: () => navigateToDirectory(dir.name),
-        contextMenu: buildFileMenu(dir, true),
-      });
-    };
-
-    const renderFileTile = (file: FileEntry) => {
-      const selected = selectedFile === file.name;
-      const isImage = isImageFile(file.name);
-
-      return renderTile({
-        key: `file-${file.name}`,
-        name: file.name,
-        isDirectory: false,
-        selected,
-        onClick: () => setSelectedFile(file.name),
-        onDoubleClick: () => {
-          if (isImage) {
-            handleImagePreview(file.name);
-          } else if (isVideoFile(file.name)) {
-            handleVideoPreview(file.name);
-          } else {
-            handleDownload(file.name);
-          }
-        },
-        contextMenu: buildFileMenu(file, false),
-      });
-    };
-
     return (
       <div className="h-full flex flex-col">
         {/* Top area: breadcrumb and action buttons */}
-        <div className="bg-white rounded-lg p-8">
+        <div className="rounded-lg p-12 mb-16" style={translucentCardStyle}>
           <div className="flex items-center justify-between">
             <Breadcrumb items={buildBrowserBreadcrumbItems()} />
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-8">
               <Button
                 icon={<UploadOutlined />}
                 onClick={() => setUploadModalVisible(true)}
                 type="primary"
+                size="small"
               >
-                {/* Upload Files */}
+                Upload
               </Button>
               <Button
                 icon={<PlusOutlined />}
                 onClick={() => setNewFolderModalVisible(true)}
+                size="small"
               >
-                {/* New Folder */}
+                New Folder
               </Button>
             </div>
           </div>
         </div>
 
         {/* File list */}
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto rounded-lg" style={translucentCardStyle}>
           {loading ? (
-            <div className="flex justify-center items-center h-full">
+            <div className="flex justify-center items-center h-full py-40">
               <Spin size="large" />
             </div>
           ) : directories.length === 0 && files.length === 0 ? (
-            <div className="flex justify-center items-center h-full">
-              <Empty description="This folder is empty" />
+            <div className="flex justify-center items-center h-full py-40">
+              <Empty 
+                description={<span className="text-platinum/70">This folder is empty</span>}
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+              />
             </div>
           ) : (
-            <div className="px-4 pb-4">
-              <div className="flex flex-wrap gap-6 md:gap-8 lg:gap-10">
-                {directories.map((d: DirectoryEntry) => renderDirTile(d))}
-                {files.map((f: FileEntry) => renderFileTile(f))}
-              </div>
+            <div>
+              {/* Directories */}
+              {directories.length > 0 && (
+                <div>
+                  <div className="px-16 py-8 text-12 text-platinum/50 uppercase tracking-wide border-b border-white/10">
+                    Folders ({directories.length})
+                  </div>
+                  {directories.map((dir: DirectoryEntry) => renderListItem(dir, true))}
+                </div>
+              )}
+              
+              {/* Files */}
+              {files.length > 0 && (
+                <div>
+                  <div className="px-16 py-8 text-12 text-platinum/50 uppercase tracking-wide border-b border-white/10">
+                    Files ({files.length})
+                  </div>
+                  {files.map((file: FileEntry) => renderListItem(file, false))}
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* Status bar */}
-        <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-sm text-gray-600">
+        <div className="mt-8 px-16 py-8 text-12 text-platinum/60 rounded-lg" style={{ backgroundColor: 'rgba(31, 31, 27, 0.5)' }}>
           <div className="flex justify-between items-center">
             <span>
               {directories.length + files.length} items
-              {directories.length > 0 && ` (${directories.length} folders)`}
-              {files.length > 0 && ` (${files.length} files)`}
+              {directories.length > 0 && ` • ${directories.length} folders`}
+              {files.length > 0 && ` • ${files.length} files`}
             </span>
+            {selectedFile && (
+              <span className="text-platinum/80">Selected: {selectedFile}</span>
+            )}
           </div>
         </div>
       </div>
@@ -761,18 +825,31 @@ const Files = () => {
     ];
 
     return (
-      <div className="p-6">
-        <div className="flex items-center">
-          {sdCardAvailable ? (
-            <Radio.Group
-              value={currentStorage}
-              onChange={handleStorageChange}
-              optionType="button"
-              buttonStyle="solid"
-              options={radioOptions}
-            />
-          ) : (
-            <div className="text-2xl font-bold text-gray-900">Local Files</div>
+      <div className="mb-16">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center">
+            {sdCardAvailable ? (
+              <Radio.Group
+                value={currentStorage}
+                onChange={handleStorageChange}
+                optionType="button"
+                buttonStyle="solid"
+                options={radioOptions}
+              />
+            ) : (
+              <div className="text-20 font-bold text-platinum">Local Files</div>
+            )}
+          </div>
+          {/* Format SD Card button - only show when SD card is selected */}
+          {currentStorage === "sd" && sdCardAvailable && (
+            <Button
+              danger
+              onClick={handleFormatSDCard}
+              loading={formatSDLoading}
+              size="small"
+            >
+              Format SD Card
+            </Button>
           )}
         </div>
       </div>
@@ -780,7 +857,7 @@ const Files = () => {
   };
 
   return (
-    <div className="h-full mt-24">
+    <div className="h-full p-16">
       {messageContextHolder}
 
       {/* Storage selector */}
@@ -791,19 +868,20 @@ const Files = () => {
 
       {/* Media Preview Modal */}
       <Modal
-        title={previewFileName || "Media Preview"}
+        title={<span className="text-platinum">{previewFileName || "Media Preview"}</span>}
         open={previewModalVisible}
         onCancel={handleCloseMediaPreview}
         footer={null}
         centered
         width={800}
+        styles={modalStyles}
       >
         <div className="flex justify-center">
           {isImageFile(previewFileName) ? (
             previewLoading ? (
               <div className="flex flex-col justify-center items-center h-64">
                 <Spin size="large" />
-                <div className="mt-4 text-gray-500">Loading image...</div>
+                <div className="mt-4 text-platinum/60">Loading image...</div>
               </div>
             ) : (
               <img
@@ -838,7 +916,7 @@ const Files = () => {
               Your browser does not support the video tag.
             </video>
           ) : (
-            <div className="text-center text-gray-500">
+            <div className="text-center text-platinum/60">
               Unsupported file type for preview
             </div>
           )}
@@ -847,7 +925,7 @@ const Files = () => {
 
       {/* New Folder Modal */}
       <Modal
-        title="New Folder"
+        title={<span className="text-platinum">New Folder</span>}
         open={newFolderModalVisible}
         onOk={handleCreateFolder}
         onCancel={() => {
@@ -856,18 +934,24 @@ const Files = () => {
         }}
         okText="Create"
         cancelText="Cancel"
+        styles={modalStyles}
       >
         <Input
           placeholder="Enter folder name"
           value={newFolderName}
           onChange={(e) => setNewFolderName(e.target.value)}
           onPressEnter={handleCreateFolder}
+          style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+            borderColor: 'rgba(224, 224, 224, 0.3)',
+            color: '#e0e0e0',
+          }}
         />
       </Modal>
 
       {/* Upload Files Modal */}
       <Modal
-        title="Upload Files"
+        title={<span className="text-platinum">Upload Files</span>}
         open={uploadModalVisible}
         onOk={handleUpload}
         onCancel={() => {
@@ -877,6 +961,7 @@ const Files = () => {
         okText="Upload"
         cancelText="Cancel"
         confirmLoading={loading}
+        styles={modalStyles}
       >
         <Upload
           fileList={uploadFileList}
@@ -890,7 +975,7 @@ const Files = () => {
 
       {/* Rename Modal */}
       <Modal
-        title="Rename"
+        title={<span className="text-platinum">Rename</span>}
         open={renameModalVisible}
         onOk={handleRename}
         onCancel={() => {
@@ -900,23 +985,30 @@ const Files = () => {
         }}
         okText="Rename"
         cancelText="Cancel"
+        styles={modalStyles}
       >
         <Input
           placeholder="Enter a new name"
           value={newFileName}
           onChange={(e) => setNewFileName(e.target.value)}
           onPressEnter={handleRename}
+          style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+            borderColor: 'rgba(224, 224, 224, 0.3)',
+            color: '#e0e0e0',
+          }}
         />
       </Modal>
 
       {/* Upload Progress Modal */}
       <Modal
-        title="Upload Progress"
+        title={<span className="text-platinum">Upload Progress</span>}
         open={uploadProgress.visible}
         footer={null}
         closable={false}
         centered
         width={500}
+        styles={modalStyles}
       >
         <div className="space-y-4">
           {/* Current file progress */}
@@ -925,9 +1017,9 @@ const Files = () => {
               <Progress
                 percent={uploadProgress.currentFileProgress || 0}
                 status="active"
-                strokeColor="#1890ff"
+                strokeColor="#2328bb"
               />
-              <div className="text-xs text-gray-500 mt-1 truncate">
+              <div className="text-xs text-platinum/60 mt-1 truncate">
                 {uploadProgress.currentFile}
               </div>
             </div>

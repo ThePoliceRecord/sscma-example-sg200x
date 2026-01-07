@@ -36,19 +36,25 @@ function Header() {
   };
 
   return (
-    <div className="bg-white text-center py-10">
-      <div className="text-primary text-18 font-medium relative flex justify-center px-40 pl-50">
-        <div className="absolute left-0 -mt-4 ">
-          <Sidebar></Sidebar>
+    <div 
+      className="text-center py-12"
+      style={{
+        backgroundColor: 'rgba(35, 40, 187, 0.95)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)',
+      }}
+    >
+      <div className="text-white text-18 font-semibold relative flex justify-center items-center px-40 pl-50">
+        <div className="absolute left-0 -mt-4">
+          <Sidebar />
         </div>
         <div className="truncate">{deviceInfo?.deviceName}</div>
         <img
-          className="w-24 h-24 ml-1 self-center"
+          className="w-20 h-20 ml-2 self-center cursor-pointer opacity-80 hover:opacity-100 transition-opacity invert"
           onClick={() => {
             setVisible(true);
           }}
           src={EditImg}
-          alt=""
+          alt="Edit"
         />
         <CommonPopup
           visible={visible}
@@ -60,22 +66,40 @@ function Header() {
             onFinish={onFinish}
             initialValues={{ deviceName: deviceInfo?.deviceName }}
             footer={
-              <Button block type="submit" color="primary">
+              <Button 
+                block 
+                type="submit" 
+                color="primary" 
+                className="font-medium"
+                style={{
+                  backgroundColor: '#2328bb',
+                  borderColor: '#0065a3',
+                }}
+              >
                 Save
               </Button>
             }
           >
             <Form.Item
               name="deviceName"
-              label="Name"
+              label={<span className="text-platinum">Name</span>}
               rules={[hostnameValidate(32)]}
             >
-              <Input placeholder="recamera-132456" maxLength={32} clearable />
+              <Input 
+                placeholder="recamera-132456" 
+                maxLength={32} 
+                clearable
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  borderColor: 'rgba(224, 224, 224, 0.3)',
+                  color: '#e0e0e0',
+                }}
+              />
             </Form.Item>
           </Form>
         </CommonPopup>
       </div>
-      <div className="mt-2 text-black opacity-60">{deviceInfo?.ip}</div>
+      <div className="mt-2 text-white opacity-70 text-14">{deviceInfo?.ip}</div>
     </div>
   );
 }

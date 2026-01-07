@@ -7,15 +7,15 @@ import {
   PickerValue,
   PickerValueExtend,
 } from "antd-mobile/es/components/picker";
-import { Button, Modal, message } from "antd";
-import { ExclamationCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Button, Modal, message, Switch } from "antd";
+import { ExclamationCircleOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
 import moment from "moment";
 import { useData } from "./hook";
 import { DeviceChannleMode, UpdateStatus, PowerMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
-import { factoryResetApi, setDevicePowerApi, formatSDCardApi } from "@/api/device/index";
+import { factoryResetApi, setDevicePowerApi } from "@/api/device/index";
 
 const channelList = [
   { label: "Self Hosted", value: DeviceChannleMode.Self },
@@ -29,6 +29,14 @@ const infoList = [
   { label: "OS", key: "osVersion" },
   { label: "Device Info", key: "type" },
 ];
+
+// Translucent card style (matching TPR.css .translucent-card-grey-1)
+const translucentCardStyle = {
+  backgroundColor: 'rgba(31, 31, 27, 0.85)',
+  boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
+  borderRadius: '12px',
+};
+
 function System() {
   const {
     deviceInfo,
@@ -48,7 +56,8 @@ function System() {
 
   const [isDashboard, setIsDashboard] = useState(false);
   const [factoryResetLoading, setFactoryResetLoading] = useState(false);
-  const [formatSDLoading, setFormatSDLoading] = useState(false);
+  const [shareAnalytics, setShareAnalytics] = useState(true);
+  const [reRegisterLoading, setReRegisterLoading] = useState(false);
   
   useEffect(() => {
     const param = parseUrlParam(window.location.href);
@@ -109,35 +118,35 @@ function System() {
     });
   };
 
-  const handleFormatSDCard = () => {
+  const handleShareAnalyticsChange = (checked: boolean) => {
+    setShareAnalytics(checked);
+    // TODO: Save analytics preference to backend
+    message.success(checked ? "Analytics sharing enabled" : "Analytics sharing disabled");
+  };
+
+  const handleReRegisterCamera = () => {
     Modal.confirm({
-      title: "Format SD Card",
-      icon: <ExclamationCircleOutlined style={{ color: "#ff4d4f" }} />,
+      title: "Re-register Camera",
+      icon: <SyncOutlined style={{ color: "#2328bb" }} />,
       content: (
         <div>
-          <p>This will format the SD card with exFAT filesystem.</p>
-          <p className="text-red-500 font-bold mt-8">
-            All data on the SD card will be permanently deleted!
-          </p>
+          <p>This will re-register the camera with the Authority Alert service.</p>
+          <p className="mt-8">Use this if you need to update the camera's registration or if you're experiencing connection issues.</p>
         </div>
       ),
-      okText: "Format",
-      okType: "danger",
+      okText: "Re-register",
       cancelText: "Cancel",
       centered: true,
       onOk: async () => {
-        setFormatSDLoading(true);
+        setReRegisterLoading(true);
         try {
-          const response = await formatSDCardApi();
-          if (response.code === 0) {
-            message.success("SD card formatted successfully");
-          } else {
-            message.error(response.msg || "Failed to format SD card");
-          }
+          // TODO: Implement actual re-registration API call
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Simulated delay
+          message.success("Camera re-registered successfully");
         } catch (error) {
-          message.error("Failed to format SD card");
+          message.error("Failed to re-register camera");
         } finally {
-          setFormatSDLoading(false);
+          setReRegisterLoading(false);
         }
       },
     });
@@ -145,13 +154,13 @@ function System() {
 
   return (
     <div className="my-8 p-16">
-      <div className="font-bold text-18 mb-14">Update</div>
-      <div className="bg-white rounded-20 px-24">
+      <div className="font-bold text-18 mb-14 text-platinum">Update</div>
+      <div className="px-24" style={translucentCardStyle}>
         <div className="flex justify-between pt-24">
-          <span className="opacity-60 self-center mr-20">Software Update</span>
+          <span className="text-platinum/70 self-center mr-20">Software Update</span>
           <div className="flex-1 text-right justify-end flex">
             {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
-              <span className="self-center ml-12">Up to Date</span>
+              <span className="self-center ml-12 text-platinum">Up to Date</span>
             )}
             {systemUpdateState.status == UpdateStatus.Check && (
               <Button type="primary" onClick={() => onUpdateCheck(true)}>
@@ -173,20 +182,20 @@ function System() {
             )}
           </div>
         </div>
-        <div className="flex justify-between py-12 text-3d ">
+        <div className="flex justify-between py-12">
           {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
-            <span className="text-12">
+            <span className="text-12 text-platinum/60">
               Up to date: last checked a minutes ago
             </span>
           )}
           {systemUpdateState.status == UpdateStatus.UpdateDone && (
-            <span className="text-12">
+            <span className="text-12 text-platinum/60">
               Please reboot the device to finish the update
             </span>
           )}
           {systemUpdateState.status == UpdateStatus.Updating && (
             <div className="w-full mb-8">
-              <div className="flex justify-between mb-4">
+              <div className="flex justify-between mb-4 text-platinum">
                 <span>{systemUpdateState.percent}%</span>
                 <span>{moment().fromNow()}</span>
               </div>
@@ -197,7 +206,7 @@ function System() {
                   percent={systemUpdateState.percent}
                 />
               </div>
-              <div className="mt-8">
+              <div className="mt-8 text-platinum/70">
                 The update can last several minutes depends on the network
                 condition
               </div>
@@ -205,19 +214,19 @@ function System() {
           )}
         </div>
       </div>
-      <div className="font-bold text-18 mb-14 my-24"> Beta Participation</div>
+      <div className="font-bold text-18 mb-14 my-24 text-platinum">Beta Participation</div>
 
-      <div className="bg-white rounded-20 px-24">
+      <div className="px-24" style={translucentCardStyle}>
         <div className="flex justify-between py-24">
-          <span className="opacity-60 mr-20">Channel</span>
+          <span className="text-platinum/70 mr-20">Channel</span>
           <div
-            className="flex-1 text-right justify-end flex"
+            className="flex-1 text-right justify-end flex cursor-pointer"
             onClick={onChannelChange}
           >
-            <span>{channelLable}</span>
+            <span className="text-platinum">{channelLable}</span>
             <span className="self-center ml-12">
               <img
-                className={`w-24 h-24 ml-6 self-center ${
+                className={`w-24 h-24 ml-6 self-center invert ${
                   systemUpdateState.channelVisible && "rotate-180 "
                 }`}
                 src={ArrowImg}
@@ -227,15 +236,15 @@ function System() {
           </div>
         </div>
         {systemUpdateState.channel == DeviceChannleMode.Self && (
-          <div className="flex justify-between py-24 w-full border-t">
-            <span className="opacity-60 mr-20">Server Address</span>
+          <div className="flex justify-between py-24 w-full border-t border-white/10">
+            <span className="text-platinum/70 mr-20">Server Address</span>
             <div
-              className="flex-1 text-right justify-end flex truncate"
+              className="flex-1 text-right justify-end flex truncate cursor-pointer"
               onClick={onEditServerAddress}
             >
-              <span className="truncate ">{systemUpdateState.address}</span>
+              <span className="truncate text-platinum">{systemUpdateState.address}</span>
               <img
-                className="w-24 h-24 ml-6 self-center"
+                className="w-24 h-24 ml-6 self-center invert"
                 src={EditBlackImg}
                 alt=""
               />
@@ -259,20 +268,20 @@ function System() {
 
       {!isDashboard && (
         <div>
-          <div className="font-bold text-18 mb-14 my-24"> System Info</div>
-          <div className="bg-white rounded-20 px-24">
+          <div className="font-bold text-18 mb-14 my-24 text-platinum">System Info</div>
+          <div className="px-24" style={translucentCardStyle}>
             {infoList.map((item, index) => {
               return (
                 <div
                   key={item.key}
                   className={`flex justify-between py-24 ${
-                    index && "border-t"
+                    index && "border-t border-white/10"
                   }`}
                 >
-                  <span className="opacity-60 text-black mr-20">
+                  <span className="text-platinum/70 mr-20">
                     {item.label}
                   </span>
-                  <div className="flex-1 truncate text-right">
+                  <div className="flex-1 truncate text-right text-platinum">
                     {item.key == "osVersion"
                       ? `${deviceInfo.osName} ${deviceInfo[item.key]}`
                       : deviceInfo[item.key]}
@@ -282,12 +291,48 @@ function System() {
             })}
           </div>
 
-          <div className="font-bold text-18 mb-14 my-24">Factory Reset</div>
-          <div className="bg-white rounded-20 px-24 py-24">
+          <div className="font-bold text-18 mb-14 my-24 text-platinum">Camera Registration</div>
+          <div className="px-24 py-24" style={translucentCardStyle}>
             <div className="flex justify-between items-center">
               <div className="flex-1 mr-20">
-                <span className="opacity-60 text-black">Reset Device</span>
-                <p className="text-12 opacity-40 mt-4">
+                <span className="text-platinum/70">Re-register Camera</span>
+                <p className="text-12 text-platinum/50 mt-4">
+                  Re-register this camera with the Authority Alert service. Use this if you need to update registration or fix connection issues.
+                </p>
+              </div>
+              <Button
+                type="primary"
+                onClick={handleReRegisterCamera}
+                loading={reRegisterLoading}
+                icon={<SyncOutlined />}
+              >
+                Re-register Camera
+              </Button>
+            </div>
+          </div>
+
+          <div className="font-bold text-18 mb-14 my-24 text-platinum">Privacy</div>
+          <div className="px-24 py-24" style={translucentCardStyle}>
+            <div className="flex justify-between items-center">
+              <div className="flex-1 mr-20">
+                <span className="text-platinum/70">Share Analytics with Us</span>
+                <p className="text-12 text-platinum/50 mt-4">
+                  Help improve Authority Alert by sharing anonymous usage data and analytics.
+                </p>
+              </div>
+              <Switch
+                checked={shareAnalytics}
+                onChange={handleShareAnalyticsChange}
+              />
+            </div>
+          </div>
+
+          <div className="font-bold text-18 mb-14 my-24 text-platinum">Factory Reset</div>
+          <div className="px-24 py-24" style={translucentCardStyle}>
+            <div className="flex justify-between items-center">
+              <div className="flex-1 mr-20">
+                <span className="text-platinum/70">Reset Device</span>
+                <p className="text-12 text-platinum/50 mt-4">
                   Reset the device to factory defaults. All data and settings will be lost.
                 </p>
               </div>
@@ -297,25 +342,6 @@ function System() {
                 loading={factoryResetLoading}
               >
                 Factory Reset
-              </Button>
-            </div>
-          </div>
-
-          <div className="font-bold text-18 mb-14 my-24">SD Card</div>
-          <div className="bg-white rounded-20 px-24 py-24">
-            <div className="flex justify-between items-center">
-              <div className="flex-1 mr-20">
-                <span className="opacity-60 text-black">Format SD Card</span>
-                <p className="text-12 opacity-40 mt-4">
-                  Format the SD card with exFAT filesystem. All data on the SD card will be deleted.
-                </p>
-              </div>
-              <Button 
-                danger 
-                onClick={handleFormatSDCard}
-                loading={formatSDLoading}
-              >
-                Format SD Card
               </Button>
             </div>
           </div>
@@ -355,14 +381,14 @@ function System() {
         }
       >
         <div className="px-30 pt-100 pb-100 h-full" style={{ height: "100vh" }}>
-          <div className="text-3d bg-white  rounded-16 p-20 h-full flex-1  flex flex-col justify-between">
-            <div className="font-bold text-16">reCamera OS Update</div>
-            <div className="flex justify-between opacity-60 font-bold mt-6 mb-10">
+          <div className="rounded-16 p-20 h-full flex-1 flex flex-col justify-between" style={translucentCardStyle}>
+            <div className="font-bold text-16 text-platinum">Authority Alert OS Update</div>
+            <div className="flex justify-between text-platinum/60 font-bold mt-6 mb-10">
               <span>Version 15.4</span>
               <span>24/06/2024</span>
             </div>
             <div className="flex-1 overflow-y-auto">
-              <div className="text-12">
+              <div className="text-12 text-platinum/70">
                 channel, and included all the changes have been tested in
                 preview
               </div>

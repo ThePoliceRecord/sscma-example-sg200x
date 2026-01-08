@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Radio, Select, Button, Input, message, Spin } from "antd";
 import { CloudDownloadOutlined, SyncOutlined, CheckCircleOutlined, LinkOutlined } from "@ant-design/icons";
 import type { RadioChangeEvent } from "antd";
+import { getUpdateConfigApi, setUpdateConfigApi, UpdateConfig as APIUpdateConfig, updateSystemApi } from "@/api/device";
 
 // Update source options
 type UpdateSource = "tpr_official" | "self_hosted";
@@ -56,6 +57,7 @@ const frequencyOptions = [
 
 function Updates() {
   const [messageApi, contextHolder] = message.useMessage();
+  const [loading, setLoading] = useState(false);
   
   const [config, setConfig] = useState<UpdateConfig>({
     osSource: "tpr_official",
@@ -65,6 +67,48 @@ function Updates() {
     checkFrequency: "daily",
     weeklyDay: "sunday",
   });
+
+  // Load configuration on mount
+  useEffect(() => {
+    const loadConfig = async () => {
+      setLoading(true);
+      try {
+        const response = await getUpdateConfigApi();
+        setConfig({
+          osSource: response.data.os_source,
+          modelSource: response.data.model_source,
+          selfHostedOSUrl: response.data.self_hosted_os_url,
+          selfHostedModelUrl: response.data.self_hosted_model_url,
+          checkFrequency: response.data.check_frequency,
+          weeklyDay: response.data.weekly_day,
+        });
+      } catch (error) {
+        console.error("Failed to load update configuration:", error);
+        messageApi.error("Failed to load update configuration");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadConfig();
+  }, [messageApi]);
+
+  // Save configuration helper
+  const saveConfig = async (newConfig: UpdateConfig) => {
+    try {
+      const apiConfig: APIUpdateConfig = {
+        os_source: newConfig.osSource,
+        model_source: newConfig.modelSource,
+        self_hosted_os_url: newConfig.selfHostedOSUrl,
+        self_hosted_model_url: newConfig.selfHostedModelUrl,
+        check_frequency: newConfig.checkFrequency,
+        weekly_day: newConfig.weeklyDay,
+      };
+      await setUpdateConfigApi(apiConfig);
+    } catch (error) {
+      console.error("Failed to save update configuration:", error);
+      throw error;
+    }
+  };
 
   const [osUpdateInfo] = useState<UpdateInfo>({
     currentVersion: "1.2.3",
@@ -83,18 +127,32 @@ function Updates() {
   const [checkingOS, setCheckingOS] = useState(false);
   const [checkingModel, setCheckingModel] = useState(false);
 
-  const handleOSSourceChange = (e: RadioChangeEvent) => {
-    setConfig((prev) => ({
-      ...prev,
+  const handleOSSourceChange = async (e: RadioChangeEvent) => {
+    const newConfig = {
+      ...config,
       osSource: e.target.value as UpdateSource,
-    }));
+    };
+    setConfig(newConfig);
+    try {
+      await saveConfig(newConfig);
+      messageApi.success("Update source saved");
+    } catch (error) {
+      messageApi.error("Failed to save update source");
+    }
   };
 
-  const handleModelSourceChange = (e: RadioChangeEvent) => {
-    setConfig((prev) => ({
-      ...prev,
+  const handleModelSourceChange = async (e: RadioChangeEvent) => {
+    const newConfig = {
+      ...config,
       modelSource: e.target.value as UpdateSource,
-    }));
+    };
+    setConfig(newConfig);
+    try {
+      await saveConfig(newConfig);
+      messageApi.success("Update source saved");
+    } catch (error) {
+      messageApi.error("Failed to save update source");
+    }
   };
 
   const handleSelfHostedOSUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -111,18 +169,32 @@ function Updates() {
     }));
   };
 
-  const handleFrequencyChange = (value: UpdateFrequency) => {
-    setConfig((prev) => ({
-      ...prev,
+  const handleFrequencyChange = async (value: UpdateFrequency) => {
+    const newConfig = {
+      ...config,
       checkFrequency: value,
-    }));
+    };
+    setConfig(newConfig);
+    try {
+      await saveConfig(newConfig);
+      messageApi.success("Update frequency saved");
+    } catch (error) {
+      messageApi.error("Failed to save update frequency");
+    }
   };
 
-  const handleWeeklyDayChange = (value: DayOfWeek) => {
-    setConfig((prev) => ({
-      ...prev,
+  const handleWeeklyDayChange = async (value: DayOfWeek) => {
+    const newConfig = {
+      ...config,
       weeklyDay: value,
-    }));
+    };
+    setConfig(newConfig);
+    try {
+      await saveConfig(newConfig);
+      messageApi.success("Weekly day saved");
+    } catch (error) {
+      messageApi.error("Failed to save weekly day");
+    }
   };
 
   const handleCheckOSUpdates = async () => {
@@ -149,9 +221,14 @@ function Updates() {
     messageApi.success("New model update available!");
   };
 
-  const handleInstallUpdate = (type: "os" | "model") => {
-    messageApi.info(`Installing ${type === "os" ? "Camera OS" : "Camera Model"} update...`);
-    // TODO: Implement actual update installation
+  const handleInstallUpdate = async (type: "os" | "model") => {
+    try {
+      await updateSystemApi();
+      messageApi.info(`Installing ${type === "os" ? "Camera OS" : "Camera Model"} update...`);
+    } catch (error) {
+      console.error("Failed to start update:", error);
+      messageApi.error("Failed to start update");
+    }
   };
 
   // Render update card

@@ -42,6 +42,7 @@ import {
   renameEntry,
   downloadAsBlob,
   uploadFiles,
+  getStorageInfo,
   StorageType,
   FileListData,
   DirectoryEntry,
@@ -192,14 +193,24 @@ const Files = () => {
     checkSdCardAvailability();
     // Load local storage root directory by default
     loadFileList("local", "");
-    // Initialize storage info with placeholder values
-    // TODO: Replace with actual API call to get storage info
-    setStorageInfo({
-      total: 8 * 1024 * 1024 * 1024,
-      used: 2.5 * 1024 * 1024 * 1024,
-      available: 5.5 * 1024 * 1024 * 1024
-    });
+    // Load storage info
+    loadStorageInfo("local");
   }, []);
+
+  // Load storage info
+  const loadStorageInfo = async (storage: StorageType) => {
+    try {
+      const info = await getStorageInfo(storage);
+      setStorageInfo({
+        total: info.total,
+        used: info.used,
+        available: info.available,
+      });
+    } catch (error) {
+      console.error("Failed to load storage info:", error);
+      // Keep existing values on error
+    }
+  };
 
   // Check SD card availability
   const checkSdCardAvailability = async () => {
@@ -862,13 +873,8 @@ const Files = () => {
       setCurrentPath("");
       setSelectedFile(null);
       loadFileList(newStorage, "");
-      // Update storage info for the new storage type
-      // TODO: Fetch actual storage info from API
-      if (newStorage === "local") {
-        setStorageInfo({ total: 8 * 1024 * 1024 * 1024, used: 2.5 * 1024 * 1024 * 1024, available: 5.5 * 1024 * 1024 * 1024 });
-      } else {
-        setStorageInfo({ total: 32 * 1024 * 1024 * 1024, used: 12 * 1024 * 1024 * 1024, available: 20 * 1024 * 1024 * 1024 });
-      }
+      // Load storage info for the new storage type
+      loadStorageInfo(newStorage);
     };
 
     const radioOptions = [

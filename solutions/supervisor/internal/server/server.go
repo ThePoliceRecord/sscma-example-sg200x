@@ -186,6 +186,8 @@ func (s *Server) setupRoutes() http.Handler {
 	fileHandler := handler.NewFileHandler()
 	ledHandler := handler.NewLEDHandler()
 	s.qrHandler = handler.NewQRHandler()
+	recordingHandler := handler.NewRecordingHandler()
+	updateConfigHandler := handler.NewUpdateConfigHandler()
 
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
@@ -246,6 +248,9 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/formatSDCard", deviceHandler.FormatSDCard)
 	apiHandler.HandleFunc("/api/deviceMgr/getPlatformInfo", deviceHandler.GetPlatformInfo)
 	apiHandler.HandleFunc("/api/deviceMgr/savePlatformInfo", deviceHandler.SavePlatformInfo)
+	apiHandler.HandleFunc("/api/deviceMgr/getAnalyticsConfig", deviceHandler.GetAnalyticsConfig)
+	apiHandler.HandleFunc("/api/deviceMgr/setAnalyticsConfig", deviceHandler.SetAnalyticsConfig)
+	apiHandler.HandleFunc("/api/deviceMgr/reRegisterCamera", deviceHandler.ReRegisterCamera)
 
 	// Camera/Video management
 	apiHandler.HandleFunc("/api/channels", handler.GetChannels)
@@ -265,12 +270,21 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/fileMgr/download", fileHandler.Download)
 	apiHandler.HandleFunc("/api/fileMgr/rename", fileHandler.Rename)
 	apiHandler.HandleFunc("/api/fileMgr/info", fileHandler.Info)
+	apiHandler.HandleFunc("/api/fileMgr/storageInfo", fileHandler.StorageInfo)
 
 	// LED management
 	apiHandler.HandleFunc("/api/ledMgr/getLEDs", ledHandler.GetLEDs)
 	apiHandler.HandleFunc("/api/ledMgr/getLED", ledHandler.GetLED)
 	apiHandler.HandleFunc("/api/ledMgr/setLED", ledHandler.SetLED)
 	apiHandler.HandleFunc("/api/ledMgr/getLEDTriggers", ledHandler.GetLEDTriggers)
+
+	// Recording management
+	apiHandler.HandleFunc("/api/recordingMgr/getConfig", recordingHandler.GetConfig)
+	apiHandler.HandleFunc("/api/recordingMgr/setConfig", recordingHandler.SetConfig)
+
+	// Update configuration management
+	apiHandler.HandleFunc("/api/updateMgr/getConfig", updateConfigHandler.GetConfig)
+	apiHandler.HandleFunc("/api/updateMgr/setConfig", updateConfigHandler.SetConfig)
 
 	// QR Code management
 	apiHandler.HandleFunc("/api/qr/scan", s.qrHandler.StartScan)

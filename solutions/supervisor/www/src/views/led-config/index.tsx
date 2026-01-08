@@ -1,13 +1,13 @@
-import { useState } from "react";
-import { Switch, message } from "antd";
+import { useState, useEffect } from "react";
+import { Switch, message, Spin } from "antd";
 import { BulbOutlined, SaveOutlined } from "@ant-design/icons";
+import { getLEDsApi, setLEDApi, LEDInfo } from "@/api/led";
 
 // LED configuration state
 interface LEDConfig {
   whiteLED: boolean;
   blueLED: boolean;
   redLED: boolean;
-  greenLED: boolean;
 }
 
 // Translucent card style (matching TPR.css .translucent-card-grey-1)
@@ -18,42 +18,82 @@ const translucentCardStyle = {
 };
 
 // LED configuration items
-const ledItems: { key: keyof LEDConfig; label: string; description: string; color: string }[] = [
+// Device has: white, blue, red (no green LED on reCamera)
+const ledItems: { key: keyof LEDConfig; label: string; description: string; color: string; deviceName: string }[] = [
   {
     key: "whiteLED",
     label: "White Light LEDs",
     description: "Illumination LEDs for night vision",
     color: "#ffffff",
+    deviceName: "white",
   },
   {
     key: "blueLED",
     label: "Blue LED",
     description: "Status indicator - typically shows connectivity",
     color: "#3b82f6",
+    deviceName: "blue",
   },
   {
     key: "redLED",
     label: "Red LED",
     description: "Status indicator - typically shows recording",
     color: "#ef4444",
-  },
-  {
-    key: "greenLED",
-    label: "Green LED",
-    description: "Status indicator - typically shows power/ready",
-    color: "#22c55e",
+    deviceName: "red",
   },
 ];
 
 function LEDConfig() {
   const [messageApi, contextHolder] = message.useMessage();
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   
   const [config, setConfig] = useState<LEDConfig>({
-    whiteLED: true,
-    blueLED: true,
+    whiteLED: false,
+    blueLED: false,
     redLED: false,
-    greenLED: true,
   });
+
+  // Load LED states on mount
+  useEffect(() => {
+    const loadLEDs = async () => {
+      setLoading(true);
+      try {
+        const response = await getLEDsApi();
+        const leds = response.data.leds;
+        
+        // Map backend LED names to UI config
+        const newConfig: LEDConfig = {
+          whiteLED: false,
+          blueLED: false,
+          redLED: false,
+        };
+        
+        leds.forEach((led: LEDInfo) => {
+          const isOn = led.brightness > 0;
+          switch (led.name) {
+            case "white":
+              newConfig.whiteLED = isOn;
+              break;
+            case "blue":
+              newConfig.blueLED = isOn;
+              break;
+            case "red":
+              newConfig.redLED = isOn;
+              break;
+          }
+        });
+        
+        setConfig(newConfig);
+      } catch (error) {
+        console.error("Failed to load LED configuration:", error);
+        messageApi.error("Failed to load LED configuration");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadLEDs();
+  }, [messageApi]);
 
   const handleToggle = (key: keyof LEDConfig) => {
     return (checked: boolean) => {
@@ -64,16 +104,36 @@ function LEDConfig() {
     };
   };
 
-  const handleSave = () => {
-    // TODO: Implement API call to save LED configuration
-    messageApi.success("LED settings saved successfully");
-    console.log("LED config:", config);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // Save each LED state
+      for (const item of ledItems) {
+        const brightness = config[item.key] ? 255 : 0;
+        await setLEDApi({
+          name: item.deviceName,
+          brightness: brightness,
+        });
+      }
+      messageApi.success("LED settings saved successfully");
+    } catch (error) {
+      console.error("Failed to save LED configuration:", error);
+      messageApi.error("Failed to save LED settings");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="p-16">
       {contextHolder}
       
+      {loading ? (
+        <div className="flex justify-center items-center py-64">
+          <Spin size="large" />
+        </div>
+      ) : (
+        <>
       {/* Page Header */}
       <div className="mb-24">
         <div className="flex items-center gap-12 mb-8">
@@ -181,16 +241,19 @@ function LEDConfig() {
       <div className="mt-32">
         <button
           onClick={handleSave}
-          className="w-full py-14 px-24 rounded-lg font-semibold text-16 text-white flex items-center justify-center gap-8 transition-all duration-200 hover:opacity-90"
+          disabled={saving}
+          className="w-full py-14 px-24 rounded-lg font-semibold text-16 text-white flex items-center justify-center gap-8 transition-all duration-200 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             backgroundColor: '#2328bb',
             boxShadow: '0 4px 12px rgba(35, 40, 187, 0.4)',
           }}
         >
-          <SaveOutlined />
-          Save LED Settings
+          {saving ? <Spin size="small" /> : <SaveOutlined />}
+          {saving ? "Saving..." : "Save LED Settings"}
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

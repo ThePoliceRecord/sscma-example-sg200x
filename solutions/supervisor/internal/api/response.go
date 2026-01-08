@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -89,4 +90,9 @@ func WriteHTTPError(w http.ResponseWriter, statusCode int, message string) {
 // ParseJSONBody parses JSON from request body into the target.
 func ParseJSONBody(r *http.Request, target interface{}) error {
 	return json.NewDecoder(r.Body).Decode(target)
+}
+
+// NewError creates a new error with the given message.
+func NewError(message string) error {
+	return errors.New(message)
 }

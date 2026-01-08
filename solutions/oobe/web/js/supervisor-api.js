@@ -228,6 +228,108 @@ class SupervisorAPI {
       trigger
     });
   }
+
+  // ========== QR Code Scanner ==========
+
+  /**
+   * Start a QR code scan session
+   * @param {number} timeout - Scan timeout in seconds (default: 30)
+   * @param {number} maxResults - Maximum QR codes to detect (default: 1, 0=unlimited)
+   * @param {string} schema - Optional schema validation (authority_config, wifi_config, device_pairing)
+   * @returns {Promise} {success: boolean, data: {scan_id: string, status: string, started_at: string}}
+   */
+  async startQRScan(timeout = 30, maxResults = 1, schema = null) {
+    const body = { timeout, max_results: maxResults };
+    if (schema) {
+      body.schema = schema;
+    }
+    return this.request('/api/qr/scan', 'POST', body, false);
+  }
+
+  /**
+   * Get status of a QR scan session
+   * @param {string} scanId - Scan session ID
+   * @returns {Promise} {success: boolean, data: {scan_id: string, status: string, result?: object}}
+   */
+  async getQRScanStatus(scanId) {
+    return this.request(`/api/qr/scan/${scanId}`, 'GET', null, false);
+  }
+
+  /**
+   * Cancel an active QR scan session
+   * @param {string} scanId - Scan session ID
+   * @returns {Promise} {success: boolean, data: {scan_id: string, status: string}}
+   */
+  async cancelQRScan(scanId) {
+    return this.request(`/api/qr/scan/${scanId}`, 'DELETE', null, false);
+  }
+
+  /**
+   * Helper method to scan and wait for result (polls automatically)
+   * @param {number} timeout - Scan timeout in seconds
+   * @param {number} maxResults - Maximum QR codes to detect
+   * @param {string} schema - Optional schema validation
+   * @param {function} onProgress - Optional callback for progress updates
+   * @returns {Promise} Result object with QR code data
+   */
+  async scanQRCode(timeout = 30, maxResults = 1, schema = null, onProgress = null) {
+    // Start scan
+    const startResult = await this.startQRScan(timeout, maxResults, schema);
+    if (!startResult.success) {
+      throw new Error(startResult.error || 'Failed to start QR scan');
+    }
+
+    const scanId = startResult.data.scan_id;
+    const pollInterval = 500; // Poll every 500ms
+
+    // Poll for results
+    return new Promise((resolve, reject) => {
+      const intervalId = setInterval(async () => {
+        try {
+          const statusResult = await this.getQRScanStatus(scanId);
+          
+          if (!statusResult.success) {
+            clearInterval(intervalId);
+            reject(new Error(statusResult.error || 'Failed to get scan status'));
+            return;
+          }
+
+          const { status, result } = statusResult.data;
+
+          // Call progress callback if provided
+          if (onProgress) {
+            onProgress(status, result);
+          }
+
+          // Check if scan is complete
+          if (status === 'complete') {
+            clearInterval(intervalId);
+            resolve(result);
+          } else if (status === 'timeout') {
+            clearInterval(intervalId);
+            reject(new Error('QR scan timed out - no QR code detected'));
+          } else if (status === 'cancelled') {
+            clearInterval(intervalId);
+            reject(new Error('QR scan was cancelled'));
+          } else if (status === 'error') {
+            clearInterval(intervalId);
+            reject(new Error(result?.reason || 'QR scan failed'));
+          }
+          // Otherwise status === 'scanning', keep polling
+        } catch (error) {
+          clearInterval(intervalId);
+          reject(error);
+        }
+      }, pollInterval);
+
+      // Cleanup on timeout (scan timeout + 5 seconds grace period)
+      setTimeout(() => {
+        clearInterval(intervalId);
+        this.cancelQRScan(scanId).catch(() => {}); // Best effort cancel
+        reject(new Error('QR scan polling timeout'));
+      }, (timeout + 5) * 1000);
+    });
+  }
 }
 
 // Export for use in other scripts

@@ -1,322 +1,159 @@
-# Supervisor Web UI Redesign Programming Specification
+# UI Specification Document
+## Scope
+This document defines **UI-only changes**.  
+There are **no backend logic changes**.  
+All existing APIs, data models, and behaviors remain unchanged.  
+This spec is intended for an AI or engineer to derive a **task list**.
 
-**Document Type:** Programming Specification  
-**Source:** `sscma-example-sg200x/solutions/supervisor/ui_update_spec.md`  
-**Status:** UI-Only Implementation  
-
----
-
-## 1. Overview
-
-### 1.1 Summary
-Redesign the Supervisor web UI to match the look and feel of the primary brand site (The Police Record / TPR) to improve brand continuity across devices (mobile + desktop). This is a **UI-only** effort with **no backend or frontend logic changes** beyond what is strictly required to apply new styling and layout.
-
-### 1.2 Goals
-- Make the Supervisor UI visually consistent with the main site (colors, typography, spacing, components, voice)
-- Improve perceived quality and usability on small screens and desktop screens without changing feature behavior
-- Ensure the UI works fully **offline** (no required external CSS/fonts/images/CDNs)
-
-### 1.3 Non-Goals / Constraints
-- Do not change backend (Go) logic or API behavior
-- Do not change frontend business logic (data fetching, store shape, auth flow, route structure, API endpoints)
-- `TPR.css` in `solutions/supervisor/TPR.css` is **reference only** and **must not ship** in compiled output
-- Avoid introducing runtime dependencies on third-party CDNs or external fonts
+Order of items below does **not** indicate priority or sequence.
 
 ---
 
-## 2. Current Implementation
+## 1. Hostname Display and Editing
 
-### 2.1 Technology Stack
-| Component | Technology |
-|-----------|------------|
-| Build Tool | Vite |
-| Framework | React + TypeScript |
-| Styling | TailwindCSS |
-| UI Libraries | antd / antd-mobile |
-| State Management | Zustand |
-| Routing | Hash Router (`createHashRouter`) |
+### 1.1 Top Bar Hostname Visibility
+- Keep the **existing edit icon** in its current location.
+- Improve the **visibility and clarity** of the edit icon so it is easier to notice.
+- Update the top bar text to display:
+  - **Camera Name: <hostname>**
+- The hostname must still be editable from the UI.
+- Do **not** display the IP address on the top bar.
 
-### 2.2 Source Locations
-| Item | Path |
-|------|------|
-| Frontend Source | `sscma-example-sg200x/solutions/supervisor/www/` |
-| Entry HTML | `sscma-example-sg200x/solutions/supervisor/www/index.html` |
-| Main Entry | `src/main.tsx` → `src/App.tsx` |
-| UI Source | `sscma-example-sg200x/solutions/supervisor/www/src/` |
-
-### 2.3 Serving Model
-- Backend serves static files from `SUPERVISOR_ROOT_DIR` (default `/usr/share/supervisor/www/`)
-- The UI refresh must keep the current supervisor web root/paths intact
-- No re-homing of files or changing served locations
-
-### 2.4 Out of Scope
-- Deployment to end users (how artifacts are packaged/installed onto devices)
+### 1.2 Network Menu Hostname Section
+- Add or retain a **Hostname configuration section** inside the **Network menu**.
+- This section allows changing the hostname.
 
 ---
 
-## 3. Brand Reference Inputs
+## 2. Upload Files Window Readability
 
-### 3.1 CSS Reference File
-- Location: `sscma-example-sg200x/solutions/supervisor/TPR.css`
-- Purpose: Guide for brand styling patterns
-- Current external references (example patterns):
-  - `https://cdn.thepolicerecord.com/...`
-  - `https://dev.thepolicerecord.com/...`
+### 2.1 General Readability
+- Improve readability of the upload files window.
+- Increase visibility and clarity of icons and labels.
+- Ensure icons and text are clearly distinguishable at a glance.
 
-### 3.2 Offline Asset Policy
-- All assets referenced by the redesigned UI (images, icons, fonts) must be included in the repository
-- Assets must be bundled into the built `dist/` output
-- No runtime fetching of brand assets from the internet
+### 2.2 Upload Action Window
+- On the **second window** where the **actual Upload button** is displayed:
+  - Make the Upload button significantly more readable.
+  - Improve contrast, size, and visual emphasis so the primary action is obvious.
 
 ---
 
-## 4. Design Direction
+## 3. Recording Menu Section
 
-### 4.1 Look & Feel Requirements
-Adopt TPR-like styling for:
-- Color system (primary, background surfaces, neutral text scale, error/warn states)
-- Typography scale and weight hierarchy
-- Card/surface styling, shadows, borders, rounding
-- Button styling and form field treatments
-- Navigation/header treatments and spacing rhythm
+### 3.1 Menu Entry
+- Add a new **Recording** section to the main menu.
 
-### 4.2 Responsive Behavior
-- Maintain existing "mobile vs PC layout" intent found under `src/layout/`
-- Mobile-first layout with touch-friendly sizing
-- Desktop layout with appropriate use of space and clearer information hierarchy
+### 3.2 Recording Location
+- Provide a **recording location selector** with the following options:
+  - SD Card
+  - Local Storage
 
----
+### 3.3 Recording Mode Selection
+Provide the following selectable modes:
+- Motion based recording
+- Constant recording
+- Recording during selected times only
 
-## 5. UI Architecture Plan
+### 3.4 Time Based Recording Configuration
+Only shown when **Recording during selected times only** is selected.
 
-### 5.1 Styling Approach
-| Approach | Details |
-|----------|---------|
-| Primary System | TailwindCSS for layout/styling |
-| Theme Tokens | Update `www/tailwind.config.js` with brand colors, typography, spacing scales |
-| CSS Variables | Use for theme primitives (e.g., `--color-bg`, `--color-surface`, `--color-text`) mapped into Tailwind |
-| Global CSS | Minimal usage in `www/src/assets/style/index.css` for base/background, typography defaults, ant resets |
-
-### 5.2 Component Strategy
-- Re-skin existing components and pages; do not rewrite flows
-- Introduce a small set of "brand wrappers" (UI-only components) if needed:
-  - `BrandHeader`
-  - `BrandCard`
-  - `BrandButton`
-- Keep props and usage identical where possible to avoid logic changes
-
-### 5.3 Ant Design Theming
-- Align antd token theming with brand palette
-- Update `ConfigProvider` theme tokens (already present in `src/App.tsx`)
-- Ensure contrast and accessibility for text on primary backgrounds
+#### Requirements:
+- Day of week checkboxes
+  - Sunday through Saturday
+- Start time selector
+- End time selector
+- If start time and end time are both **00:00**, treat as **24 hour recording** for that day.
 
 ---
 
-## 6. Offline Asset Plan
+## 4. LED Configuration Page
 
-### 6.1 Inventory External References
-Scan for `http(s)://` and `url(` in:
-- `solutions/supervisor/TPR.css`
-- `solutions/supervisor/www/src/**`
+### 4.1 Menu Entry
+- Add a **LED Configuration** page to the menu.
 
-Produce a list of:
-- External images
-- External fonts (if any)
-- Any other CDN references
+### 4.2 LED Controls
+Provide individual toggle controls for:
+- White Light LEDs
+- Blue LED
+- Red LED
+- Green LED
 
-### 6.2 Download and Store Locally
-Add assets to the frontend under:
-| Location | Usage |
-|----------|-------|
-| `www/public/` | Copied as-is by Vite, stable URL paths |
-| `www/src/assets/` | Bundled and hashed by Vite when imported |
-
-**Recommendation:** Prefer `public/brand/...` for direct CSS `url(...)` usage without import churn
-
-### 6.3 Reference Replacement
-Replace external `url(https://...)` with local `url(/brand/...)` or equivalent relative paths depending on `base`
-
-### 6.4 Base Path Considerations
-- Use asset paths that work with the supervisor's current static file root (`SUPERVISOR_ROOT_DIR`)
-- Do not require changing where files are served from
-- Prefer relative asset references where feasible
+Each LED must have an independent on or off toggle.
 
 ---
 
-## 7. Scope of Visual Updates
+## 5. Updates Menu Section
 
-### 7.1 Pages/Areas
-UI changes apply across all screens without changing behavior:
+### 5.1 Updates Menu Entry
+- Add an **Updates** section to the menu.
 
-| Area | Source Location |
-|------|-----------------|
-| Login | `src/views/login` |
-| Overview | `src/views/overview` |
-| Network | `src/views/network` |
-| Files | `src/views/files` |
-| Terminal | `src/views/terminal` |
-| System | `src/views/system` |
-| Security | `src/views/security` |
-| Power | `src/views/power` |
-| Dashboard wrapper | `src/views/dashboard` |
-| Mobile layout shells | `src/layout/mobile/*` |
-| PC layout shells | `src/layout/pc/*` |
-| Common components | `src/components/*` |
+### 5.2 Camera OS Updates Card
+- Combine **Update** and **Beta channel** into a single card.
+- Rename the card to:
+  - **Camera OS Updates**
 
----
+#### Channel Selection
+- Replace the bottom scroller with a clearer and more discoverable selection control.
 
-## 8. Implementation Phases
+### 5.3 Camera Model Updates Card
+- Add a second card for **Camera Model Updates**.
+- This card must have the **same features and layout** as Camera OS Updates.
 
-### Phase 0: Research (How It Works)
-1. **Map navigation + layout structure:**
-   - Identify where header/nav/sidebar are rendered (mobile + PC)
-   - Identify global containers (page padding, max widths, background surfaces)
-
-2. **Catalog reused components and style entry points:**
-   - Ant components used commonly (Buttons, Forms, Lists, Tabs, Popup/Modal)
-   - Tailwind conventions and existing tokens
-   - Confirm the primary UI organization under `www/src/`
-
-3. **Create external dependency list:**
-   - Document all assets and URLs requiring localization
-
-### Phase 1: Define the Brand System (Tokens)
-1. Create/update Tailwind theme tokens:
-   - Colors
-   - Border radii
-   - Shadows
-   - Spacing
-
-2. Define typography rules:
-   - Sizes
-   - Weights
-   - Line heights
-
-3. Define core surfaces:
-   - App background
-   - Page surface
-   - Card surface
-   - Elevated surface (modal/popup)
-
-### Phase 2: Layout + Navigation Reskin
-1. Mobile header/sidebar reskin:
-   - Spacing
-   - Icons
-   - Backgrounds
-
-2. Desktop layout reskin:
-   - Left nav
-   - Top bar
-   - Content container
-
-3. Ensure consistent:
-   - Page titles
-   - Breadcrumbs (if present)
-   - Section spacing
-
-### Phase 3: Component Reskin
-1. Form elements:
-   - Buttons
-   - Inputs
-   - Selects
-   - Toggles
-
-2. Display elements:
-   - Lists
-   - Cards
-   - Tabs
-
-3. Overlay elements:
-   - Popups/modals to match brand
-
-4. State elements:
-   - Loading states
-   - Empty states
-   - Error states
-
-### Phase 4: Page-by-page Visual Polish
-1. Apply consistent hero/intro sections where appropriate
-2. Harmonize spacing and information density per page
-3. Ensure camera streaming/preview area (if present) looks integrated
-
-### Phase 5: Offline Assets + Hardening
-1. Download and vendor any brand assets referenced by CSS
-2. Replace external references with local paths
-3. Build and verify the resulting `dist/` contains everything required
+### 5.4 Update Check Frequency
+Add a selection for update check frequency:
+- Every 30 minutes
+- Daily
+- Weekly
+  - Weekly requires a **day of week selection**
+- Manual only
 
 ---
 
-## 9. Acceptance Criteria
+## 6. About Menu Section
 
-| Criterion | Requirement |
-|-----------|-------------|
-| Visual Consistency | UI visually matches the main brand direction (TPR-like) across mobile and desktop |
-| Offline Capability | No runtime dependency on external assets (fonts/images/CSS) to render correctly |
-| Logic Preservation | No changes to API behavior, auth flow, or feature behavior (UI-only changes) |
-| Path Preservation | Current supervisor static file serving locations/paths remain intact (served from `SUPERVISOR_ROOT_DIR`) |
+### 6.1 Menu Entry
+- Add an **About** section to the menu.
 
----
+### 6.2 Links
+Provide links to:
+- Open Source Licenses
+- Data Collection Policy
 
-## 10. Deliverables
-
-| Deliverable | Location |
-|-------------|----------|
-| Updated UI styling and layout | `sscma-example-sg200x/solutions/supervisor/www/` |
-| Locally vendored asset set | Inside the frontend project |
-| Original spec document | `sscma-example-sg200x/solutions/supervisor/ui_update_spec.md` |
+### 6.3 Footer Message
+- Add a short friendly message such as:
+  - Made with thought for you, the user.
+  - We care more about your security than the original developer.
+- Tone should be friendly and reassuring.
 
 ---
 
-## 11. File Structure Reference
+## 7. Storage Usage Display
 
-```
-sscma-example-sg200x/solutions/supervisor/
-├── TPR.css                    # Brand reference (DO NOT SHIP)
-├── ui_update_spec.md          # Original spec document
-└── www/
-    ├── index.html             # Entry HTML
-    ├── tailwind.config.js     # Tailwind configuration (UPDATE)
-    ├── public/
-    │   └── brand/             # Local brand assets (CREATE)
-    └── src/
-        ├── main.tsx           # Main entry
-        ├── App.tsx            # App component (ConfigProvider theming)
-        ├── assets/
-        │   └── style/
-        │       └── index.css  # Global CSS (UPDATE)
-        ├── components/        # Common components (RESKIN)
-        ├── layout/
-        │   ├── mobile/        # Mobile layout shells (RESKIN)
-        │   └── pc/            # PC layout shells (RESKIN)
-        └── views/
-            ├── login/         # Login page (RESKIN)
-            ├── overview/      # Overview page (RESKIN)
-            ├── network/       # Network page (RESKIN)
-            ├── files/         # Files page (RESKIN)
-            ├── terminal/      # Terminal page (RESKIN)
-            ├── system/        # System page (RESKIN)
-            ├── security/      # Security page (RESKIN)
-            ├── power/         # Power page (RESKIN)
-            └── dashboard/     # Dashboard wrapper (RESKIN)
-```
+### 7.1 Storage Information Section
+- Add a section that shows:
+  - Total storage space
+  - Used storage space
+
+### 7.2 Storage Source Awareness
+- Storage information must update based on selection:
+  - Local files
+  - SD card
 
 ---
 
-## 12. Technical Notes
+## 8. WiFi Network List Behavior
 
-### 12.1 Hash Router
-The application uses `createHashRouter` for static hosting compatibility. This should not be changed.
+### 8.1 Network Menu Adjustment
+- In the Network menu, limit visible WiFi networks to **6 entries**.
+- If more than 6 networks exist:
+  - Show a scroll bar
+  - Allow scrolling to view the remaining networks
+- Prevent the list from expanding the window height excessively.
 
-### 12.2 Vite Build
-- Assets in `public/` are copied as-is with stable URL paths
-- Assets in `src/assets/` are bundled and hashed when imported
-- The `dist/` output must be self-contained
+---
 
-### 12.3 Ant Design Integration
-- `ConfigProvider` theme tokens are already present in `src/App.tsx`
-- Update these tokens to match the brand system
-- Both antd and antd-mobile are in use
-
-### 12.4 Zustand State
-- State management via Zustand should not be modified
-- UI changes are purely presentational
+## Notes
+- No backend logic changes are allowed.
+- UI behavior must map to existing backend functionality.
+- This document is designed to be machine readable and task oriented.

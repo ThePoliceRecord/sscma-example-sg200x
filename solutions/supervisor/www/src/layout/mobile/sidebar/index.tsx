@@ -5,12 +5,18 @@ import SecurityImg from "@/assets/images/svg/security.svg";
 import NetworkImg from "@/assets/images/svg/network.svg";
 import TerminalImg from "@/assets/images/svg/terminal.svg";
 import SystemImg from "@/assets/images/svg/system.svg";
-import PowerImg from "@/assets/images/svg/power.svg";
 import FilesImg from "@/assets/images/svg/files.svg";
 import { useLocation, useNavigate } from "react-router-dom";
 import useConfigStore from "@/store/config";
 import { clearCurrentUser } from "@/store/user";
-import { MenuOutlined, LogoutOutlined } from "@ant-design/icons";
+import {
+  MenuOutlined,
+  LogoutOutlined,
+  VideoCameraOutlined,
+  BulbOutlined,
+  CloudDownloadOutlined,
+  InfoCircleOutlined
+} from "@ant-design/icons";
 
 function Sidebar() {
   const location = useLocation();
@@ -26,7 +32,16 @@ function Sidebar() {
     window.location.hash = "#/";
   };
 
-  const menuList = [
+  // Menu items with support for both SVG images and Ant Design icons
+  type MenuItem = {
+    label: string;
+    icon?: string;
+    antIcon?: React.ReactNode;
+    route: string;
+    judgeApp?: boolean;
+  };
+
+  const menuList: MenuItem[][] = [
     [
       {
         label: "Overview",
@@ -35,13 +50,18 @@ function Sidebar() {
         judgeApp: true,
       },
       { label: "Files", icon: FilesImg, route: "/files" },
+      { label: "Recording", antIcon: <VideoCameraOutlined />, route: "/recording" },
       { label: "Security", icon: SecurityImg, route: "/security" },
       { label: "Network", icon: NetworkImg, route: "/network" },
     ],
     [
+      { label: "LED Config", antIcon: <BulbOutlined />, route: "/led-config" },
+      { label: "Updates", antIcon: <CloudDownloadOutlined />, route: "/updates" },
       { label: "Terminal", icon: TerminalImg, route: "/terminal" },
       { label: "System", icon: SystemImg, route: "/system" },
-      { label: "Power", icon: PowerImg, route: "/power" },
+    ],
+    [
+      { label: "About", antIcon: <InfoCircleOutlined />, route: "/about" },
     ],
   ];
 
@@ -115,12 +135,20 @@ function Sidebar() {
                               setVisible(false);
                             }}
                           >
-                            <img
-                              className={`w-22 h-22 mr-12 ${isActive ? "invert brightness-200" : "opacity-80"}`}
-                              src={citem.icon}
-                              alt=""
-                              style={!isActive ? { filter: 'invert(0.9)' } : undefined}
-                            />
+                            {citem.icon ? (
+                              <img
+                                className={`w-22 h-22 mr-12 ${isActive ? "invert brightness-200" : "opacity-80"}`}
+                                src={citem.icon}
+                                alt=""
+                                style={!isActive ? { filter: 'invert(0.9)' } : undefined}
+                              />
+                            ) : citem.antIcon ? (
+                              <span
+                                className={`mr-12 text-22 ${isActive ? "text-white" : "text-platinum/80"}`}
+                              >
+                                {citem.antIcon}
+                              </span>
+                            ) : null}
                             <span className="font-medium">{citem.label}</span>
                           </div>
                         )

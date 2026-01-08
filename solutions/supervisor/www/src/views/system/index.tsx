@@ -8,7 +8,7 @@ import {
   PickerValueExtend,
 } from "antd-mobile/es/components/picker";
 import { Button, Modal, message, Switch } from "antd";
-import { ExclamationCircleOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
+import { ExclamationCircleOutlined, ReloadOutlined, SyncOutlined, PoweroffOutlined } from "@ant-design/icons";
 import moment from "moment";
 import { useData } from "./hook";
 import { DeviceChannleMode, UpdateStatus, PowerMode } from "@/enum";
@@ -152,120 +152,34 @@ function System() {
     });
   };
 
+  const handlePowerAction = (mode: PowerMode) => {
+    const isReboot = mode === PowerMode.Restart;
+    
+    Modal.confirm({
+      title: <span className="text-platinum">{isReboot ? 'Reboot Device' : 'Shutdown Device'}</span>,
+      icon: <ExclamationCircleOutlined style={{ color: isReboot ? '#2328bb' : '#ff4d4f' }} />,
+      content: (
+        <div className="text-platinum/80">
+          {isReboot
+            ? 'The device will restart. This may take a few minutes. Are you sure you want to continue?'
+            : 'The device will shut down completely. You will need physical access to turn it back on. Are you sure you want to continue?'
+          }
+        </div>
+      ),
+      okText: isReboot ? 'Reboot' : 'Shutdown',
+      okType: isReboot ? 'primary' : 'primary',
+      okButtonProps: isReboot ? {} : { danger: true },
+      cancelText: 'Cancel',
+      centered: true,
+      onOk: async () => {
+        await setDevicePowerApi({ mode });
+        message.success(isReboot ? "Device is rebooting..." : "Device is shutting down...");
+      },
+    });
+  };
+
   return (
     <div className="my-8 p-16">
-      <div className="font-bold text-18 mb-14 text-platinum">Update</div>
-      <div className="px-24" style={translucentCardStyle}>
-        <div className="flex justify-between pt-24">
-          <span className="text-platinum/70 self-center mr-20">Software Update</span>
-          <div className="flex-1 text-right justify-end flex">
-            {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
-              <span className="self-center ml-12 text-platinum">Up to Date</span>
-            )}
-            {systemUpdateState.status == UpdateStatus.Check && (
-              <Button type="primary" onClick={() => onUpdateCheck(true)}>
-                Check Update
-              </Button>
-            )}
-            {systemUpdateState.status == UpdateStatus.NeedUpdate && (
-              <Button type="primary" onClick={onUpdateApply}>
-                Update
-              </Button>
-            )}
-            {systemUpdateState.status == UpdateStatus.Updating && (
-              <Button onClick={onUpdateCancel}>Cancel</Button>
-            )}
-            {systemUpdateState.status == UpdateStatus.UpdateDone && (
-              <Button type="primary" onClick={onUpdateRestart}>
-                Reboot
-              </Button>
-            )}
-          </div>
-        </div>
-        <div className="flex justify-between py-12">
-          {systemUpdateState.status == UpdateStatus.NoNeedUpdate && (
-            <span className="text-12 text-platinum/60">
-              Up to date: last checked a minutes ago
-            </span>
-          )}
-          {systemUpdateState.status == UpdateStatus.UpdateDone && (
-            <span className="text-12 text-platinum/60">
-              Please reboot the device to finish the update
-            </span>
-          )}
-          {systemUpdateState.status == UpdateStatus.Updating && (
-            <div className="w-full mb-8">
-              <div className="flex justify-between mb-4 text-platinum">
-                <span>{systemUpdateState.percent}%</span>
-                <span>{moment().fromNow()}</span>
-              </div>
-              <div>
-                <ProgressBar
-                  className="w-full"
-                  rounded={false}
-                  percent={systemUpdateState.percent}
-                />
-              </div>
-              <div className="mt-8 text-platinum/70">
-                The update can last several minutes depends on the network
-                condition
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="font-bold text-18 mb-14 my-24 text-platinum">Beta Participation</div>
-
-      <div className="px-24" style={translucentCardStyle}>
-        <div className="flex justify-between py-24">
-          <span className="text-platinum/70 mr-20">Channel</span>
-          <div
-            className="flex-1 text-right justify-end flex cursor-pointer"
-            onClick={onChannelChange}
-          >
-            <span className="text-platinum">{channelLable}</span>
-            <span className="self-center ml-12">
-              <img
-                className={`w-24 h-24 ml-6 self-center invert ${
-                  systemUpdateState.channelVisible && "rotate-180 "
-                }`}
-                src={ArrowImg}
-                alt=""
-              />
-            </span>
-          </div>
-        </div>
-        {systemUpdateState.channel == DeviceChannleMode.Self && (
-          <div className="flex justify-between py-24 w-full border-t border-white/10">
-            <span className="text-platinum/70 mr-20">Server Address</span>
-            <div
-              className="flex-1 text-right justify-end flex truncate cursor-pointer"
-              onClick={onEditServerAddress}
-            >
-              <span className="truncate text-platinum">{systemUpdateState.address}</span>
-              <img
-                className="w-24 h-24 ml-6 self-center invert"
-                src={EditBlackImg}
-                alt=""
-              />
-            </div>
-          </div>
-        )}
-      </div>
-      <Picker
-        columns={[channelList]}
-        visible={systemUpdateState.channelVisible}
-        onClose={() => {
-          setSystemUpdateState({
-            channelVisible: false,
-          });
-        }}
-        value={[systemUpdateState.channel] as PickerValue[]}
-        onConfirm={
-          onConfirm as (value: PickerValue[], extend: PickerValueExtend) => void
-        }
-      />
-
       {!isDashboard && (
         <div>
           <div className="font-bold text-18 mb-14 my-24 text-platinum">System Info</div>
@@ -327,6 +241,79 @@ function System() {
             </div>
           </div>
 
+          <div className="font-bold text-18 mb-14 my-24 text-platinum">Power</div>
+          <div className="p-24" style={translucentCardStyle}>
+            <div className="space-y-16">
+              {/* Reboot Option */}
+              <div
+                className="flex items-center justify-between p-16 rounded-12 border border-white/10 hover:border-primary/30 transition-colors cursor-pointer"
+                style={{ backgroundColor: 'rgba(255, 255, 255, 0.03)' }}
+                onClick={() => handlePowerAction(PowerMode.Restart)}
+              >
+                <div className="flex items-center">
+                  <div className="w-40 h-40 rounded-full flex items-center justify-center mr-12" style={{ backgroundColor: 'rgba(35, 40, 187, 0.3)' }}>
+                    <ReloadOutlined style={{ fontSize: 20, color: '#9be564' }} />
+                  </div>
+                  <div>
+                    <div className="text-16 font-medium text-platinum">Reboot</div>
+                    <div className="text-12 text-platinum/50 mt-2">
+                      Restart the device. Services will be temporarily unavailable.
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  type="primary"
+                  icon={<ReloadOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePowerAction(PowerMode.Restart);
+                  }}
+                >
+                  Reboot
+                </Button>
+              </div>
+
+              {/* Shutdown Option */}
+              <div
+                className="flex items-center justify-between p-16 rounded-12 border border-white/10 hover:border-red-500/30 transition-colors cursor-pointer"
+                style={{ backgroundColor: 'rgba(255, 255, 255, 0.03)' }}
+                onClick={() => handlePowerAction(PowerMode.Shutdown)}
+              >
+                <div className="flex items-center">
+                  <div className="w-40 h-40 rounded-full flex items-center justify-center mr-12" style={{ backgroundColor: 'rgba(255, 77, 79, 0.2)' }}>
+                    <PoweroffOutlined style={{ fontSize: 20, color: '#ff4d4f' }} />
+                  </div>
+                  <div>
+                    <div className="text-16 font-medium text-platinum">Shutdown</div>
+                    <div className="text-12 text-platinum/50 mt-2">
+                      Power off the device completely. Requires physical access to restart.
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  danger
+                  icon={<PoweroffOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePowerAction(PowerMode.Shutdown);
+                  }}
+                >
+                  Shutdown
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Power Warning */}
+          <div className="mt-12 px-16 py-12 rounded-lg" style={{ backgroundColor: 'rgba(255, 77, 79, 0.15)' }}>
+            <div className="flex items-start">
+              <ExclamationCircleOutlined style={{ color: '#ff6b6b', fontSize: 16, marginTop: 2, marginRight: 12 }} />
+              <div className="text-14 text-white">
+                Shutdown requires a power cycle (disconnect and reconnect power) to restart the device.
+              </div>
+            </div>
+          </div>
+
           <div className="font-bold text-18 mb-14 my-24 text-platinum">Factory Reset</div>
           <div className="px-24 py-24" style={translucentCardStyle}>
             <div className="flex justify-between items-center">
@@ -336,8 +323,8 @@ function System() {
                   Reset the device to factory defaults. All data and settings will be lost.
                 </p>
               </div>
-              <Button 
-                danger 
+              <Button
+                danger
                 onClick={handleFactoryReset}
                 loading={factoryResetLoading}
               >

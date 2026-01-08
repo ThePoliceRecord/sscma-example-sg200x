@@ -32,6 +32,7 @@ import {
   EditOutlined,
   DownloadOutlined,
   RightOutlined,
+  DatabaseOutlined,
 } from "@ant-design/icons";
 import {
   listFiles,
@@ -93,6 +94,29 @@ const modalStyles = {
   },
 };
 
+// Upload modal styles - improved readability with solid light background
+const uploadModalContentStyle = {
+  backgroundColor: '#ffffff',
+  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+  borderRadius: '12px',
+};
+
+const uploadModalStyles = {
+  content: uploadModalContentStyle,
+  header: {
+    backgroundColor: '#ffffff',
+    borderBottom: '1px solid #e0e0e0',
+    color: '#333333',
+  },
+  body: {
+    backgroundColor: '#ffffff',
+  },
+  footer: {
+    backgroundColor: '#ffffff',
+    borderTop: '1px solid #e0e0e0',
+  },
+};
+
 // Format file size
 const formatFileSize = (bytes: number | undefined): string => {
   if (!bytes) return '-';
@@ -102,6 +126,13 @@ const formatFileSize = (bytes: number | undefined): string => {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
+// Storage info interface
+interface StorageInfo {
+  total: number;
+  used: number;
+  available: number;
+}
+
 const Files = () => {
   // State management
   const [currentStorage, setCurrentStorage] = useState<StorageType>("local");
@@ -110,6 +141,13 @@ const Files = () => {
   const [loading, setLoading] = useState(false);
   const [sdCardAvailable, setSdCardAvailable] = useState(false);
   const [formatSDLoading, setFormatSDLoading] = useState(false);
+  
+  // Storage usage state
+  const [storageInfo, setStorageInfo] = useState<StorageInfo>({
+    total: 0,
+    used: 0,
+    available: 0,
+  });
 
   // File operation state
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -154,6 +192,13 @@ const Files = () => {
     checkSdCardAvailability();
     // Load local storage root directory by default
     loadFileList("local", "");
+    // Initialize storage info with placeholder values
+    // TODO: Replace with actual API call to get storage info
+    setStorageInfo({
+      total: 8 * 1024 * 1024 * 1024,
+      used: 2.5 * 1024 * 1024 * 1024,
+      available: 5.5 * 1024 * 1024 * 1024
+    });
   }, []);
 
   // Check SD card availability
@@ -754,8 +799,8 @@ const Files = () => {
           </div>
         </div>
 
-        {/* File list */}
-        <div className="flex-1 overflow-auto rounded-lg" style={translucentCardStyle}>
+        {/* File list - limited height to fit on screen */}
+        <div className="overflow-auto rounded-lg" style={{ ...translucentCardStyle, maxHeight: '350px' }}>
           {loading ? (
             <div className="flex justify-center items-center h-full py-40">
               <Spin size="large" />
@@ -809,7 +854,7 @@ const Files = () => {
     );
   };
 
-  // Render storage selector
+  // Render storage selector with storage usage display
   const renderStorageSelector = () => {
     const handleStorageChange = (e: RadioChangeEvent) => {
       const newStorage = e.target.value as StorageType;
@@ -817,6 +862,13 @@ const Files = () => {
       setCurrentPath("");
       setSelectedFile(null);
       loadFileList(newStorage, "");
+      // Update storage info for the new storage type
+      // TODO: Fetch actual storage info from API
+      if (newStorage === "local") {
+        setStorageInfo({ total: 8 * 1024 * 1024 * 1024, used: 2.5 * 1024 * 1024 * 1024, available: 5.5 * 1024 * 1024 * 1024 });
+      } else {
+        setStorageInfo({ total: 32 * 1024 * 1024 * 1024, used: 12 * 1024 * 1024 * 1024, available: 20 * 1024 * 1024 * 1024 });
+      }
     };
 
     const radioOptions = [
@@ -824,9 +876,14 @@ const Files = () => {
       ...(sdCardAvailable ? [{ label: "SD Card", value: "sd" }] : []),
     ];
 
+    // Calculate storage usage percentage
+    const usagePercent = storageInfo.total > 0
+      ? Math.round((storageInfo.used / storageInfo.total) * 100)
+      : 0;
+
     return (
       <div className="mb-16">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between mb-12">
           <div className="flex items-center">
             {sdCardAvailable ? (
               <Radio.Group
@@ -851,6 +908,36 @@ const Files = () => {
               Format SD Card
             </Button>
           )}
+        </div>
+        
+        {/* Storage Usage Display */}
+        <div className="p-16 rounded-lg" style={translucentCardStyle}>
+          <div className="flex items-center gap-12 mb-12">
+            <DatabaseOutlined style={{ fontSize: 20, color: '#9be564' }} />
+            <span className="text-14 font-medium text-platinum">
+              Storage Usage ({currentStorage === "local" ? "Local" : "SD Card"})
+            </span>
+          </div>
+          <Progress
+            percent={usagePercent}
+            strokeColor={{
+              '0%': '#2328bb',
+              '100%': usagePercent > 90 ? '#e3170a' : '#9be564',
+            }}
+            trailColor="rgba(255, 255, 255, 0.1)"
+            showInfo={false}
+          />
+          <div className="flex justify-between mt-8 text-12">
+            <span className="text-platinum/70">
+              Used: <span className="text-platinum font-medium">{formatFileSize(storageInfo.used)}</span>
+            </span>
+            <span className="text-platinum/70">
+              Total: <span className="text-platinum font-medium">{formatFileSize(storageInfo.total)}</span>
+            </span>
+          </div>
+          <div className="text-center mt-4 text-11 text-platinum/50">
+            {formatFileSize(storageInfo.available)} available ({100 - usagePercent}% free)
+          </div>
         </div>
       </div>
     );
@@ -949,9 +1036,9 @@ const Files = () => {
         />
       </Modal>
 
-      {/* Upload Files Modal */}
+      {/* Upload Files Modal - Improved Readability */}
       <Modal
-        title={<span className="text-platinum">Upload Files</span>}
+        title={<span style={{ color: '#333333', fontWeight: 600, fontSize: 18 }}>Upload Files</span>}
         open={uploadModalVisible}
         onOk={handleUpload}
         onCancel={() => {
@@ -961,16 +1048,93 @@ const Files = () => {
         okText="Upload"
         cancelText="Cancel"
         confirmLoading={loading}
-        styles={modalStyles}
+        styles={uploadModalStyles}
+        okButtonProps={{
+          style: {
+            backgroundColor: '#2328bb',
+            borderColor: '#2328bb',
+            fontWeight: 600,
+            fontSize: 15,
+            height: 40,
+            paddingLeft: 24,
+            paddingRight: 24,
+          }
+        }}
+        cancelButtonProps={{
+          style: {
+            fontWeight: 500,
+            fontSize: 15,
+            height: 40,
+          }
+        }}
       >
         <Upload
           fileList={uploadFileList}
           beforeUpload={() => false}
           onChange={({ fileList }) => setUploadFileList(fileList)}
           multiple
+          className="upload-modal-list"
         >
-          <Button icon={<UploadOutlined />}>Select files</Button>
+          <Button
+            icon={<UploadOutlined />}
+            style={{
+              backgroundColor: '#f5f5f5',
+              borderColor: '#d9d9d9',
+              color: '#333333',
+              fontWeight: 500,
+            }}
+          >
+            Select files
+          </Button>
         </Upload>
+        {uploadFileList.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{
+              color: '#666666',
+              fontSize: 13,
+              marginBottom: 8,
+              fontWeight: 500
+            }}>
+              Selected files ({uploadFileList.length}):
+            </div>
+            <div style={{
+              maxHeight: 200,
+              overflowY: 'auto',
+              border: '1px solid #e0e0e0',
+              borderRadius: 8,
+              padding: 8,
+              backgroundColor: '#fafafa',
+            }}>
+              {uploadFileList.map((file, index) => (
+                <div
+                  key={file.uid || index}
+                  style={{
+                    padding: '8px 12px',
+                    borderBottom: index < uploadFileList.length - 1 ? '1px solid #e8e8e8' : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  <FileOutlined style={{ color: '#666666', fontSize: 16 }} />
+                  <span style={{
+                    color: '#333333',
+                    fontSize: 14,
+                    flex: 1,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {file.name}
+                  </span>
+                  <span style={{ color: '#999999', fontSize: 12 }}>
+                    {file.size ? formatFileSize(file.size) : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Rename Modal */}

@@ -15,7 +15,7 @@ import { DeviceChannleMode, UpdateStatus, PowerMode } from "@/enum";
 import { requiredTrimValidate } from "@/utils/validate";
 import { parseUrlParam } from "@/utils";
 import useConfigStore from "@/store/config";
-import { factoryResetApi, setDevicePowerApi } from "@/api/device/index";
+import { factoryResetApi, setDevicePowerApi, getAnalyticsConfigApi, setAnalyticsConfigApi, reRegisterCameraApi } from "@/api/device/index";
 
 const channelList = [
   { label: "Self Hosted", value: DeviceChannleMode.Self },
@@ -63,6 +63,19 @@ function System() {
     const param = parseUrlParam(window.location.href);
     const dashboard = param.dashboard || param.disablelayout;
     setIsDashboard(dashboard == 1);
+  }, []);
+
+  // Load analytics configuration on mount
+  useEffect(() => {
+    const loadAnalyticsConfig = async () => {
+      try {
+        const response = await getAnalyticsConfigApi();
+        setShareAnalytics(response.data.enabled);
+      } catch (error) {
+        console.error("Failed to load analytics config:", error);
+      }
+    };
+    loadAnalyticsConfig();
   }, []);
 
   const channelLable = useMemo(() => {
@@ -118,10 +131,19 @@ function System() {
     });
   };
 
-  const handleShareAnalyticsChange = (checked: boolean) => {
+  const handleShareAnalyticsChange = async (checked: boolean) => {
+    // Optimistic update
     setShareAnalytics(checked);
-    // TODO: Save analytics preference to backend
-    message.success(checked ? "Analytics sharing enabled" : "Analytics sharing disabled");
+    
+    try {
+      await setAnalyticsConfigApi({ enabled: checked });
+      message.success(checked ? "Analytics sharing enabled" : "Analytics sharing disabled");
+    } catch (error) {
+      console.error("Failed to save analytics preference:", error);
+      message.error("Failed to save analytics preference");
+      // Revert on error
+      setShareAnalytics(!checked);
+    }
   };
 
   const handleReRegisterCamera = () => {
@@ -140,10 +162,10 @@ function System() {
       onOk: async () => {
         setReRegisterLoading(true);
         try {
-          // TODO: Implement actual re-registration API call
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Simulated delay
+          await reRegisterCameraApi();
           message.success("Camera re-registered successfully");
         } catch (error) {
+          console.error("Failed to re-register camera:", error);
           message.error("Failed to re-register camera");
         } finally {
           setReRegisterLoading(false);

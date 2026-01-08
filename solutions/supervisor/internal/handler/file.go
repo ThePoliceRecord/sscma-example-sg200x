@@ -854,3 +854,45 @@ func (h *FileHandler) Info(w http.ResponseWriter, r *http.Request) {
 
 	api.WriteSuccessMessage(w, "Info retrieved.", data)
 }
+
+// StorageInfo returns storage space information.
+func (h *FileHandler) StorageInfo(w http.ResponseWriter, r *http.Request) {
+	storage := getParam(r, "storage")
+
+	effectiveStorage := storage
+	if effectiveStorage == "" {
+		effectiveStorage = "local"
+	}
+
+	if !h.isValidStorage(effectiveStorage) {
+		api.WriteError(w, -1, "Invalid storage parameter. Use 'local' or 'sd'.")
+		return
+	}
+
+	if effectiveStorage == "sd" && !h.isSDAvailable() {
+		api.WriteError(w, -1, "SD card not available.")
+		return
+	}
+
+	fullPath := h.getFullPath("", effectiveStorage)
+
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(fullPath, &stat); err != nil {
+		api.WriteError(w, -1, "Failed to get storage info: "+err.Error())
+		return
+	}
+
+	total := stat.Blocks * uint64(stat.Bsize)
+	available := stat.Bavail * uint64(stat.Bsize)
+	used := total - available
+
+	data := map[string]interface{}{
+		"storage":   effectiveStorage,
+		"total":     total,
+		"used":      used,
+		"available": available,
+		"mounted":   true,
+	}
+
+	api.WriteSuccessMessage(w, "Storage info retrieved.", data)
+}

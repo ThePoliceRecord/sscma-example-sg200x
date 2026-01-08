@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -777,4 +779,199 @@ func isValidDeviceName(name string) bool {
 // isAlphaNumeric checks if a byte is alphanumeric
 func isAlphaNumeric(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// Analytics Configuration APIs
+
+// AnalyticsConfig represents the analytics configuration.
+type AnalyticsConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+const analyticsConfigPath = "/etc/supervisor/analytics.conf"
+
+// GetAnalyticsConfig returns the current analytics configuration.
+func (h *DeviceHandler) GetAnalyticsConfig(w http.ResponseWriter, r *http.Request) {
+	config, err := loadAnalyticsConfig()
+	if err != nil {
+		// Return default config if file doesn't exist
+		config = &AnalyticsConfig{Enabled: true}
+	}
+
+	api.WriteSuccess(w, config)
+}
+
+// SetAnalyticsConfig updates the analytics configuration.
+func (h *DeviceHandler) SetAnalyticsConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	var config AnalyticsConfig
+	if err := api.ParseJSONBody(r, &config); err != nil {
+		api.WriteError(w, -1, "Invalid request body")
+		return
+	}
+
+	// Save configuration
+	if err := saveAnalyticsConfig(&config); err != nil {
+		logger.Error("Failed to save analytics config: %v", err)
+		api.WriteError(w, -1, "Failed to save configuration")
+		return
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{
+		"status":  "success",
+		"message": "Analytics configuration saved",
+		"enabled": config.Enabled,
+	})
+}
+
+// loadAnalyticsConfig loads the analytics configuration from file.
+func loadAnalyticsConfig() (*AnalyticsConfig, error) {
+	data, err := os.ReadFile(analyticsConfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var config AnalyticsConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+// saveAnalyticsConfig saves the analytics configuration to file.
+func saveAnalyticsConfig(config *AnalyticsConfig) error {
+	// Ensure directory exists
+	dir := filepath.Dir(analyticsConfigPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(analyticsConfigPath, data, 0644)
+}
+
+// Camera Re-registration API
+
+// AACamera represents the camera registration data for Authority Alert backend.
+type AACamera struct {
+	SerialNumber string `json:"serial_number"`
+	DeviceName   string `json:"device_name"`
+	OSVersion    string `json:"os_version"`
+	ModelVersion string `json:"model_version,omitempty"`
+}
+
+// ReRegisterCamera re-registers the camera with the Authority Alert service.
+func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	logger.Info("Camera re-registration requested")
+
+	// Read API key from platform info
+	platformInfo := device.GetPlatformInfo()
+	if platformInfo == "" {
+		logger.Error("Platform info not found - camera may not be registered yet")
+		api.WriteError(w, -1, "Camera not registered. Please scan QR code first.")
+		return
+	}
+
+	// Parse platform info to get API key
+	var platformData map[string]interface{}
+	if err := json.Unmarshal([]byte(platformInfo), &platformData); err != nil {
+		logger.Error("Failed to parse platform info: %v", err)
+		api.WriteError(w, -1, "Invalid platform configuration")
+		return
+	}
+
+	apiKey, ok := platformData["api_key"].(string)
+	if !ok || apiKey == "" {
+		logger.Error("API key not found in platform info")
+		api.WriteError(w, -1, "API key not found. Please scan QR code first.")
+		return
+	}
+
+	// Build camera registration data
+	cameraData := AACamera{
+		SerialNumber: system.GetSerialNumber(),
+		DeviceName:   system.GetDeviceName(),
+		OSVersion:    system.GetOSVersion(),
+	}
+
+	// Call Authority Alert self-register endpoint
+	if err := selfRegisterCamera(apiKey, &cameraData); err != nil {
+		logger.Error("Failed to re-register camera: %v", err)
+		api.WriteError(w, -1, "Failed to re-register camera: "+err.Error())
+		return
+	}
+
+	logger.Info("Camera re-registered successfully")
+	api.WriteSuccess(w, map[string]interface{}{
+		"status":  "success",
+		"message": "Camera re-registered successfully",
+	})
+}
+
+// selfRegisterCamera calls the Authority Alert self-register API.
+func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
+	// Authority Alert backend URL
+	backendURL := "https://dev.thepolicerecord.com/api/v1/cameras/self-register/"
+
+	// Marshal camera data
+	jsonData, err := json.Marshal(cameraData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal camera data: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("PUT", backendURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Send request
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check status code
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("Authority Alert API returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("registration failed with status %d", resp.StatusCode)
+	}
+
+	// Parse response
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		logger.Warning("Failed to parse response: %v", err)
+		// Don't fail if we can't parse response, as long as status was 200
+	}
+
+	logger.Info("Camera self-registration successful: %s", string(body))
+	return nil
 }

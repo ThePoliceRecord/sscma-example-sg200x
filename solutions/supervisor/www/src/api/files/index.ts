@@ -197,3 +197,21 @@ export const uploadFiles = async (
 
 // 兼容旧类型命名
 export type DirectoryEntry = FileEntry;
+
+// Storage info interface
+export interface StorageInfo {
+  storage: StorageType;
+  total: number;
+  used: number;
+  available: number;
+  mounted: boolean;
+}
+
+// Get storage info
+export const getStorageInfo = async (storage: StorageType): Promise<StorageInfo> => {
+  const res = await supervisorRequest<StorageInfo>({
+    url: `/api/fileMgr/storageInfo?storage=${encodeURIComponent(storage)}`,
+    method: "get",
+  });
+  return res.data;
+};

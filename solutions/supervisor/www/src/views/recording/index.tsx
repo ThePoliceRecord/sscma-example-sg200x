@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Radio, Checkbox, message } from "antd";
+import { useState, useEffect } from "react";
+import { Radio, Checkbox, message, Spin } from "antd";
 import { VideoCameraOutlined, SaveOutlined } from "@ant-design/icons";
 import type { RadioChangeEvent, CheckboxProps } from "antd";
+import { getRecordingConfigApi, setRecordingConfigApi, RecordingConfig as APIRecordingConfig } from "@/api/recording";
 
 // Recording location options
 type RecordingLocation = "sd_card" | "local_storage";
@@ -50,6 +51,8 @@ const dayLabels: { key: keyof DaysOfWeek; label: string; short: string }[] = [
 
 function Recording() {
   const [messageApi, contextHolder] = message.useMessage();
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   
   const [config, setConfig] = useState<RecordingConfig>({
     location: "local_storage",
@@ -68,6 +71,32 @@ function Recording() {
       endTime: "00:00",
     },
   });
+
+  // Load configuration on mount
+  useEffect(() => {
+    const loadConfig = async () => {
+      setLoading(true);
+      try {
+        const response = await getRecordingConfigApi();
+        // Map API response to local state
+        setConfig({
+          location: response.data.location,
+          mode: response.data.mode,
+          schedule: {
+            days: response.data.schedule.days,
+            startTime: response.data.schedule.start_time,
+            endTime: response.data.schedule.end_time,
+          },
+        });
+      } catch (error) {
+        console.error("Failed to load recording configuration:", error);
+        messageApi.error("Failed to load recording configuration");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadConfig();
+  }, [messageApi]);
 
   const handleLocationChange = (e: RadioChangeEvent) => {
     setConfig((prev) => ({
@@ -126,16 +155,40 @@ function Recording() {
 
   const is24HourRecording = config.schedule.startTime === "00:00" && config.schedule.endTime === "00:00";
 
-  const handleSave = () => {
-    // TODO: Implement API call to save recording configuration
-    messageApi.success("Recording settings saved successfully");
-    console.log("Recording config:", config);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // Map local state to API format
+      const apiConfig: APIRecordingConfig = {
+        location: config.location,
+        mode: config.mode,
+        schedule: {
+          days: config.schedule.days,
+          start_time: config.schedule.startTime,
+          end_time: config.schedule.endTime,
+        },
+      };
+      
+      await setRecordingConfigApi(apiConfig);
+      messageApi.success("Recording settings saved successfully");
+    } catch (error) {
+      console.error("Failed to save recording configuration:", error);
+      messageApi.error("Failed to save recording settings");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="p-16">
       {contextHolder}
       
+      {loading ? (
+        <div className="flex justify-center items-center py-64">
+          <Spin size="large" />
+        </div>
+      ) : (
+        <>
       {/* Page Header */}
       <div className="mb-24">
         <div className="flex items-center gap-12 mb-8">
@@ -298,16 +351,19 @@ function Recording() {
       <div className="mt-32">
         <button
           onClick={handleSave}
-          className="w-full py-14 px-24 rounded-lg font-semibold text-16 text-white flex items-center justify-center gap-8 transition-all duration-200 hover:opacity-90"
+          disabled={saving}
+          className="w-full py-14 px-24 rounded-lg font-semibold text-16 text-white flex items-center justify-center gap-8 transition-all duration-200 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             backgroundColor: '#2328bb',
             boxShadow: '0 4px 12px rgba(35, 40, 187, 0.4)',
           }}
         >
-          <SaveOutlined />
-          Save Recording Settings
+          {saving ? <Spin size="small" /> : <SaveOutlined />}
+          {saving ? "Saving..." : "Save Recording Settings"}
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

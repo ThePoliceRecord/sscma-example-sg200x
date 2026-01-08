@@ -168,3 +168,59 @@ export const formatSDCardApi = async () =>
     url: "api/deviceMgr/formatSDCard",
     method: "post",
   });
+
+// Analytics configuration
+export const getAnalyticsConfigApi = async () =>
+  supervisorRequest<{
+    enabled: boolean;
+  }>({
+    url: "api/deviceMgr/getAnalyticsConfig",
+    method: "get",
+  });
+
+export const setAnalyticsConfigApi = async (data: { enabled: boolean }) =>
+  supervisorRequest<{
+    status: string;
+    message: string;
+    enabled: boolean;
+  }>({
+    url: "api/deviceMgr/setAnalyticsConfig",
+    method: "post",
+    data,
+  });
+
+// Camera re-registration
+export const reRegisterCameraApi = async () =>
+  supervisorRequest<{
+    status: string;
+    message: string;
+  }>({
+    url: "api/deviceMgr/reRegisterCamera",
+    method: "post",
+  });
+
+// Update configuration
+export interface UpdateConfig {
+  os_source: "tpr_official" | "self_hosted";
+  model_source: "tpr_official" | "self_hosted";
+  self_hosted_os_url: string;
+  self_hosted_model_url: string;
+  check_frequency: "30min" | "daily" | "weekly" | "manual";
+  weekly_day: "sunday" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday";
+}
+
+export const getUpdateConfigApi = async () =>
+  supervisorRequest<UpdateConfig>({
+    url: "api/updateMgr/getConfig",
+    method: "get",
+  });
+
+export const setUpdateConfigApi = async (data: UpdateConfig) =>
+  supervisorRequest<{
+    status: string;
+    message: string;
+  }>({
+    url: "api/updateMgr/setConfig",
+    method: "post",
+    data,
+  });

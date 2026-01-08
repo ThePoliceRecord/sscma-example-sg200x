@@ -8,6 +8,10 @@ import System from "@/views/system";
 import Power from "@/views/power";
 import Dashboard from "@/views/dashboard";
 import Files from "@/views/files";
+import Recording from "@/views/recording";
+import LEDConfig from "@/views/led-config";
+import Updates from "@/views/updates";
+import About from "@/views/about";
 import ConfigLayout from "@/layout/config";
 import MainLayout from "@/layout/main";
 
@@ -69,6 +73,22 @@ const Routes = [
       {
         path: "power",
         element: <Power />,
+      },
+      {
+        path: "recording",
+        element: <Recording />,
+      },
+      {
+        path: "led-config",
+        element: <LEDConfig />,
+      },
+      {
+        path: "updates",
+        element: <Updates />,
+      },
+      {
+        path: "about",
+        element: <About />,
       },
     ],
   },

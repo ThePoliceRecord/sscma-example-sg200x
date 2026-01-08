@@ -36,7 +36,7 @@ function Header() {
   };
 
   return (
-    <div 
+    <div
       className="text-center py-12"
       style={{
         backgroundColor: 'rgba(35, 40, 187, 0.95)',
@@ -47,18 +47,33 @@ function Header() {
         <div className="absolute left-0 -mt-4">
           <Sidebar />
         </div>
-        <div className="truncate">{deviceInfo?.deviceName}</div>
-        <img
-          className="w-20 h-20 ml-2 self-center cursor-pointer opacity-80 hover:opacity-100 transition-opacity invert"
+        <div className="truncate">
+          <span className="text-white/70 text-14 font-normal">Camera Name: </span>
+          {deviceInfo?.deviceName}
+        </div>
+        <div
+          className="ml-6 p-4 rounded-full cursor-pointer hover:bg-white/30 transition-all duration-200 flex items-center justify-center"
           onClick={() => {
             setVisible(true);
           }}
-          src={EditImg}
-          alt="Edit"
-        />
+          title="Edit Camera Name"
+          style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.15)',
+            border: '1px solid rgba(255, 255, 255, 0.3)',
+          }}
+        >
+          <img
+            className="w-20 h-20"
+            src={EditImg}
+            alt="Edit"
+            style={{
+              filter: 'brightness(0) invert(1)',
+            }}
+          />
+        </div>
         <CommonPopup
           visible={visible}
-          title={"Edit Device Name"}
+          title={"Edit Camera Name"}
           onCancel={onCancel}
         >
           <Form
@@ -66,10 +81,10 @@ function Header() {
             onFinish={onFinish}
             initialValues={{ deviceName: deviceInfo?.deviceName }}
             footer={
-              <Button 
-                block 
-                type="submit" 
-                color="primary" 
+              <Button
+                block
+                type="submit"
+                color="primary"
                 className="font-medium"
                 style={{
                   backgroundColor: '#2328bb',
@@ -85,9 +100,9 @@ function Header() {
               label={<span className="text-platinum">Name</span>}
               rules={[hostnameValidate(32)]}
             >
-              <Input 
-                placeholder="recamera-132456" 
-                maxLength={32} 
+              <Input
+                placeholder="recamera-132456"
+                maxLength={32}
                 clearable
                 style={{
                   backgroundColor: 'rgba(255, 255, 255, 0.1)',
@@ -99,7 +114,6 @@ function Header() {
           </Form>
         </CommonPopup>
       </div>
-      <div className="mt-2 text-white opacity-70 text-14">{deviceInfo?.ip}</div>
     </div>
   );
 }

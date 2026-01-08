@@ -1,6 +1,14 @@
 import React, { useState } from "react";
 import { Form, Input, Modal } from "antd";
-import { LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
+import {
+  LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  VideoCameraOutlined,
+  BulbOutlined,
+  CloudDownloadOutlined,
+  InfoCircleOutlined
+} from "@ant-design/icons";
 import useConfigStore from "@/store/config";
 import { clearCurrentUser } from "@/store/user";
 import EditImg from "@/assets/images/svg/edit.svg";
@@ -9,7 +17,6 @@ import SecurityImg from "@/assets/images/svg/security.svg";
 import NetworkImg from "@/assets/images/svg/network.svg";
 import TerminalImg from "@/assets/images/svg/terminal.svg";
 import SystemImg from "@/assets/images/svg/system.svg";
-import PowerImg from "@/assets/images/svg/power.svg";
 import FilesImg from "@/assets/images/svg/files.svg";
 import { updateDeviceInfoApi, queryDeviceInfoApi } from "@/api/device/index";
 import { hostnameValidate } from "@/utils/validate";
@@ -19,7 +26,16 @@ interface Props {
   children: React.ReactNode;
 }
 
-const menuList = [
+// Menu items with support for both SVG images and Ant Design icons
+type MenuItem = {
+  label: string;
+  icon?: string;
+  antIcon?: React.ReactNode;
+  route: string;
+  judgeApp?: boolean;
+};
+
+const menuList: MenuItem[][] = [
   [
     {
       label: "Overview",
@@ -28,13 +44,18 @@ const menuList = [
       judgeApp: true,
     },
     { label: "Files", icon: FilesImg, route: "/files" },
+    { label: "Recording", antIcon: <VideoCameraOutlined />, route: "/recording" },
     { label: "Security", icon: SecurityImg, route: "/security" },
     { label: "Network", icon: NetworkImg, route: "/network" },
   ],
   [
+    { label: "LED Config", antIcon: <BulbOutlined />, route: "/led-config" },
+    { label: "Updates", antIcon: <CloudDownloadOutlined />, route: "/updates" },
     { label: "Terminal", icon: TerminalImg, route: "/terminal" },
     { label: "System", icon: SystemImg, route: "/system" },
-    { label: "Power", icon: PowerImg, route: "/power" },
+  ],
+  [
+    { label: "About", antIcon: <InfoCircleOutlined />, route: "/about" },
   ],
 ];
 
@@ -133,10 +154,10 @@ const PCLayout: React.FC<Props> = ({ children }) => {
         <div className="mt-2 text-white opacity-70 text-14">{deviceInfo?.ip}</div>
       </div>
 
-      <div className="flex flex-1">
-        {/* Left Sidebar Navigation - Translucent Dark with Collapse */}
-        <div 
-          className={`h-full flex flex-col transition-all duration-300 ${
+      <div className="flex-1 relative">
+        {/* Left Sidebar Navigation - Absolute positioned to overlay content */}
+        <div
+          className={`absolute top-0 left-0 h-full flex flex-col transition-all duration-300 z-50 ${
             sidebarCollapsed ? 'w-70' : 'w-220'
           }`}
           style={translucentSidebarStyle}
@@ -169,12 +190,20 @@ const PCLayout: React.FC<Props> = ({ children }) => {
                             }}
                             title={sidebarCollapsed ? citem.label : undefined}
                           >
-                            <img
-                              className={`w-22 h-22 ${sidebarCollapsed ? '' : 'mr-12'} ${isActive ? "invert brightness-200" : "opacity-80"}`}
-                              src={citem.icon}
-                              alt=""
-                              style={!isActive ? { filter: 'invert(0.9)' } : undefined}
-                            />
+                            {citem.icon ? (
+                              <img
+                                className={`w-22 h-22 ${sidebarCollapsed ? '' : 'mr-12'} ${isActive ? "invert brightness-200" : "opacity-80"}`}
+                                src={citem.icon}
+                                alt=""
+                                style={!isActive ? { filter: 'invert(0.9)' } : undefined}
+                              />
+                            ) : citem.antIcon ? (
+                              <span
+                                className={`${sidebarCollapsed ? '' : 'mr-12'} text-22 ${isActive ? "text-white" : "text-platinum/80"}`}
+                              >
+                                {citem.antIcon}
+                              </span>
+                            ) : null}
                             {!sidebarCollapsed && (
                               <span className="font-medium whitespace-nowrap">{citem.label}</span>
                             )}
@@ -204,9 +233,9 @@ const PCLayout: React.FC<Props> = ({ children }) => {
           </div>
         </div>
         
-        {/* Main Content Area - With Background Image */}
+        {/* Main Content Area - With Background Image - Full width, content centered */}
         <div
-          className="flex-1 overflow-y-auto"
+          className="w-full h-full overflow-y-auto"
           style={{
             backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)), url('/brand/blueback.jpeg')`,
             backgroundSize: 'cover',

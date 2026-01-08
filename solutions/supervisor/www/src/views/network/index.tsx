@@ -1,5 +1,6 @@
-import { Button, Form, Switch, Input, Modal, Empty } from "antd";
-import { LoadingOutlined, InfoCircleOutlined, ReloadOutlined, WifiOutlined, GlobalOutlined } from "@ant-design/icons";
+import { useState, useRef } from "react";
+import { Button, Form, Switch, Input, Modal, Empty, message } from "antd";
+import { LoadingOutlined, InfoCircleOutlined, ReloadOutlined, WifiOutlined, GlobalOutlined, EditOutlined, SaveOutlined } from "@ant-design/icons";
 import WarnImg from "@/assets/images/warn.png";
 import LockImg from "@/assets/images/svg/lock.svg";
 import ConnectedImg from "@/assets/images/svg/connected.svg";
@@ -9,6 +10,9 @@ import Wifi2 from "@/assets/images/svg/wifi_2.svg";
 import Wifi3 from "@/assets/images/svg/wifi_3.svg";
 import Wifi4 from "@/assets/images/svg/wifi_4.svg";
 import { useData, OperateType, FormType } from "./hook";
+import useConfigStore from "@/store/config";
+import { updateDeviceInfoApi, queryDeviceInfoApi } from "@/api/device/index";
+import { hostnameValidate } from "@/utils/validate";
 
 import {
   WifiAuth,
@@ -17,6 +21,10 @@ import {
   WifiEnable,
 } from "@/enum/network";
 import { requiredTrimValidate } from "@/utils/validate";
+
+// Maximum visible WiFi networks before scrolling
+const MAX_VISIBLE_WIFI_NETWORKS = 3;
+const WIFI_ITEM_HEIGHT = 64; // Approximate height of each WiFi item in pixels
 
 const wifiImg: {
   [prop: number]: string;
@@ -86,8 +94,44 @@ function Network() {
     onRefreshNetworks,
   } = useData();
 
+  // Hostname editing state
+  const { deviceInfo, updateDeviceInfo } = useConfigStore();
+  const [hostnameEditing, setHostnameEditing] = useState(false);
+  const [hostnameValue, setHostnameValue] = useState(deviceInfo?.deviceName || '');
+  const [hostnameSaving, setHostnameSaving] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
+
+  const handleHostnameSave = async () => {
+    const trimmedValue = hostnameValue.trim();
+    if (!trimmedValue) {
+      messageApi.error('Hostname cannot be empty');
+      return;
+    }
+    
+    // Basic hostname validation (alphanumeric and hyphens, max 32 chars)
+    const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?$/;
+    if (!hostnameRegex.test(trimmedValue)) {
+      messageApi.error('Invalid hostname. Use only letters, numbers, and hyphens.');
+      return;
+    }
+
+    setHostnameSaving(true);
+    try {
+      await updateDeviceInfoApi({ deviceName: trimmedValue });
+      const res = await queryDeviceInfoApi();
+      updateDeviceInfo(res.data);
+      setHostnameEditing(false);
+      messageApi.success('Hostname updated successfully');
+    } catch (error) {
+      messageApi.error('Failed to update hostname');
+    } finally {
+      setHostnameSaving(false);
+    }
+  };
+
   return (
     <div className="p-16">
+      {contextHolder}
       {/* Page Header */}
       <div className="mb-24">
         <div className="flex items-center gap-12 mb-8">
@@ -103,6 +147,77 @@ function Network() {
               </span>
             </div>
           )}
+      </div>
+
+      {/* Hostname Section */}
+      <div className="mb-24">
+        <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">Hostname</div>
+        <div className="p-20" style={translucentCardStyle}>
+          <div className="flex justify-between items-center">
+            <div className="flex items-center flex-1 min-w-0">
+              <div className="w-40 h-40 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: 'rgba(35, 40, 187, 0.3)' }}>
+                <EditOutlined style={{ fontSize: 18, color: '#9be564' }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                {hostnameEditing ? (
+                  <Input
+                    value={hostnameValue}
+                    onChange={(e) => setHostnameValue(e.target.value)}
+                    placeholder="Enter hostname"
+                    maxLength={32}
+                    style={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                      borderColor: 'rgba(224, 224, 224, 0.3)',
+                      color: '#e0e0e0',
+                    }}
+                    onPressEnter={handleHostnameSave}
+                  />
+                ) : (
+                  <>
+                    <div className="text-16 font-medium text-platinum truncate">
+                      {deviceInfo?.deviceName || 'Not set'}
+                    </div>
+                    <div className="text-12 text-platinum/50 mt-2">
+                      Camera hostname for network identification
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            {hostnameEditing ? (
+              <div className="flex gap-8 ml-12">
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setHostnameEditing(false);
+                    setHostnameValue(deviceInfo?.deviceName || '');
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<SaveOutlined />}
+                  loading={hostnameSaving}
+                  onClick={handleHostnameSave}
+                >
+                  Save
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined style={{ color: '#e0e0e0', fontSize: 18 }} />}
+                onClick={() => {
+                  setHostnameValue(deviceInfo?.deviceName || '');
+                  setHostnameEditing(true);
+                }}
+              />
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Ethernet Section */}
@@ -250,7 +365,16 @@ function Network() {
                   <span className="text-12 text-platinum/60">Refresh</span>
                 </Button>
               </div>
-              <div className="p-16" style={translucentCardStyle}>
+              <div
+                className="p-16"
+                style={{
+                  ...translucentCardStyle,
+                  maxHeight: state.wifiInfoList.length > MAX_VISIBLE_WIFI_NETWORKS
+                    ? `${MAX_VISIBLE_WIFI_NETWORKS * WIFI_ITEM_HEIGHT + 32}px`
+                    : 'auto',
+                  overflowY: state.wifiInfoList.length > MAX_VISIBLE_WIFI_NETWORKS ? 'auto' : 'visible',
+                }}
+              >
                 {state.wifiInfoList.length > 0 ? (
                   state.wifiInfoList.map((wifiItem, index) => (
                     <div

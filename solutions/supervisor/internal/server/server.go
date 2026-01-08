@@ -25,6 +25,7 @@ type Server struct {
 	httpsServer *http.Server
 	authManager *auth.AuthManager
 	wifiHandler *handler.WiFiHandler
+	qrHandler   *handler.QRHandler
 	tlsManager  *tls.Manager
 }
 
@@ -152,6 +153,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.wifiHandler.Stop()
 	}
 
+	// Stop QR handler
+	if s.qrHandler != nil {
+		s.qrHandler.Close()
+	}
+
 	// Shutdown HTTP server
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
@@ -179,12 +185,16 @@ func (s *Server) setupRoutes() http.Handler {
 	s.wifiHandler = handler.NewWiFiHandler()
 	fileHandler := handler.NewFileHandler()
 	ledHandler := handler.NewLEDHandler()
+	s.qrHandler = handler.NewQRHandler()
 
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
 		"/api/version":                      true,
 		"/api/channels":                     true, // Channel discovery for video player
+		"/api/qr/scan":                      true, // QR scanning for OOBE
+		"/api/qr/scan/":                     true, // QR scan status for OOBE
+		"/api/qr/health":                    true, // QR health check
 		"/api/userMgr/login":                true,
 		"/api/userMgr/queryUserInfo":        true, // Needed to check firstLogin status
 		"/api/userMgr/updatePassword":       true, // Needed for first login password change
@@ -261,6 +271,12 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/ledMgr/getLED", ledHandler.GetLED)
 	apiHandler.HandleFunc("/api/ledMgr/setLED", ledHandler.SetLED)
 	apiHandler.HandleFunc("/api/ledMgr/getLEDTriggers", ledHandler.GetLEDTriggers)
+
+	// QR Code management
+	apiHandler.HandleFunc("/api/qr/scan", s.qrHandler.StartScan)
+	apiHandler.HandleFunc("/api/qr/scan/", s.qrHandler.GetScanStatus)
+	apiHandler.HandleFunc("/api/qr/health", s.qrHandler.GetHealth)
+	// Note: Cancel uses DELETE on /api/qr/scan/{id}, handled by GetScanStatus/CancelScan based on method
 
 	// Apply auth middleware to API routes
 	mux.Handle("/api/", authMiddleware(apiHandler))

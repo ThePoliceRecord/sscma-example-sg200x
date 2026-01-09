@@ -22,55 +22,11 @@ class OOBEApp {
 
   async init() {
     console.log('Initializing OOBE...');
-    this.showLoading('Checking device status...');
+    this.hideLoading();
     
-    try {
-      // Check if supervisor is running
-      const versionResult = await this.api.getVersion();
-      if (!versionResult.success) {
-        this.showError(`Cannot connect to supervisor at ${this.api.baseUrl}. Please ensure the supervisor service is running. You can check with: ps | grep supervisor`);
-        
-        // Show a retry button
-        document.getElementById('loading-overlay').innerHTML = `
-          <div style="background: white; padding: 2rem; border-radius: 0.5rem; text-align: center; max-width: 500px;">
-            <h3 style="color: #ef4444; margin-bottom: 1rem;">Cannot Connect to Supervisor</h3>
-            <p style="margin-bottom: 1rem;">The OOBE setup wizard needs the supervisor service to be running.</p>
-            <p style="margin-bottom: 1rem; font-size: 0.875rem; color: #6b7280;">
-              Trying to connect to: <strong>${this.api.baseUrl}</strong>
-            </p>
-            <div style="background: #f3f4f6; padding: 1rem; border-radius: 0.375rem; margin-bottom: 1rem; text-align: left;">
-              <strong>Troubleshooting:</strong>
-              <ul style="margin: 0.5rem 0 0 1.5rem; font-size: 0.875rem;">
-                <li>Ensure supervisor is installed and running</li>
-                <li>Check: <code>ps | grep supervisor</code></li>
-                <li>Check: <code>netstat -tlnp | grep 443</code></li>
-                <li>Start supervisor: <code>/etc/init.d/S93sscma-supervisor start</code></li>
-              </ul>
-            </div>
-            <button class="btn btn-primary" onclick="location.reload()">Retry Connection</button>
-          </div>
-        `;
-        return;
-      }
-
-      // Get device info
-      const deviceResult = await this.api.queryDeviceInfo();
-      if (deviceResult.success) {
-        this.setupData.deviceInfo = deviceResult.data;
-      }
-
-      // Check if first login
-      const userResult = await this.api.queryUserInfo();
-      if (userResult.success) {
-        this.setupData.userInfo = userResult.data;
-      }
-
-      this.hideLoading();
-      this.showStep(1);
-    } catch (error) {
-      console.error('Initialization error:', error);
-      this.showError('Failed to initialize setup. Please refresh the page.');
-    }
+    // Start at step 1 (Welcome)
+    // We'll login when the user provides the old password in step 2
+    this.showStep(1);
   }
 
   showStep(step) {
@@ -118,19 +74,12 @@ class OOBEApp {
   }
 
   loadWelcomeStep() {
-    const serialNumber = this.setupData.deviceInfo?.sn || 'Unknown';
-    document.getElementById('device-serial').textContent = serialNumber;
+    // Welcome step - no additional setup needed
   }
 
   loadPasswordStep() {
-    const isFirstLogin = this.setupData.userInfo?.firstLogin;
     const messageEl = document.getElementById('password-message');
-    
-    if (isFirstLogin) {
-      messageEl.textContent = 'Please set a new password for your device. The default password must be changed for security.';
-    } else {
-      messageEl.textContent = 'Please enter your password to continue setup.';
-    }
+    messageEl.textContent = 'Please enter the current password and set a new password for your device.';
   }
 
   async loadDeviceConfigStep() {
@@ -181,85 +130,229 @@ class OOBEApp {
   }
 
   async requestGeolocation() {
+    // Check if geolocation is available
     if (!navigator.geolocation) {
-      this.showError('Geolocation is not supported by your browser');
+      this.showError('Geolocation is not supported by your browser. Please enter the location manually.');
+      return;
+    }
+
+    // Check if we're in a secure context (required for geolocation)
+    // Note: localhost and 127.0.0.1 are considered secure, but other IPs with self-signed certs may not be
+    if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+      this.showError('Geolocation requires a secure connection. Please enter the location manually.');
       return;
     }
 
     this.showLoading('Getting your location...');
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        
-        // Try to reverse geocode using a free API
-        try {
-          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
-          if (response.ok) {
-            const data = await response.json();
-            const address = data.address;
-            
-            // Build location string
-            let location = '';
-            if (address.road) location += address.road;
-            if (address.city) location += (location ? ', ' : '') + address.city;
-            if (address.state) location += (location ? ', ' : '') + address.state;
-            
-            if (location) {
-              document.getElementById('device-name').value = location;
-              this.hideLoading();
-            } else {
-              this.hideLoading();
-              this.showError('Could not determine address from location');
-            }
-          } else {
-            this.hideLoading();
-            // Fallback: just show coordinates
-            document.getElementById('device-name').value = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-          }
-        } catch (e) {
-          this.hideLoading();
-          // Fallback: just show coordinates
-          document.getElementById('device-name').value = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-        }
-
-        // Store coordinates for device info
-        this.setupData.geolocation = {
-          latitude: lat,
-          longitude: lon,
-          accuracy: position.coords.accuracy
-        };
-      },
-      (error) => {
-        this.hideLoading();
-        this.showError('Could not get location: ' + error.message);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
+    // Helper to get human-readable error message
+    const getGeolocationErrorMessage = (error) => {
+      // Handle the case where error might not have standard properties
+      if (!error) {
+        return 'Unable to get location. Please enter it manually.';
       }
-    );
+
+      // Standard GeolocationPositionError codes
+      const PERMISSION_DENIED = 1;
+      const POSITION_UNAVAILABLE = 2;
+      const TIMEOUT = 3;
+
+      switch (error.code) {
+        case PERMISSION_DENIED:
+          return 'Location permission denied. Please allow location access in your browser settings and try again.';
+        case POSITION_UNAVAILABLE:
+          return 'Location information unavailable. Your device may not have location services, or they may be disabled.';
+        case TIMEOUT:
+          return 'Location request timed out. Please try again or enter the location manually.';
+        default:
+          // Include the error message if available for debugging
+          const msg = error.message || 'Unknown error';
+          console.log('Geolocation error:', error);
+          return `Unable to get location (${msg}). Please enter it manually.`;
+      }
+    };
+
+    // Try to get position with promise wrapper
+    const tryGetPosition = (highAccuracy, timeoutMs) => {
+      return new Promise((resolve, reject) => {
+        const options = {
+          enableHighAccuracy: highAccuracy,
+          timeout: timeoutMs,
+          maximumAge: 300000 // Accept cached position up to 5 minutes old
+        };
+
+        navigator.geolocation.getCurrentPosition(resolve, reject, options);
+      });
+    };
+
+    try {
+      let position = null;
+      let lastError = null;
+
+      // Strategy 1: Try with low accuracy first (faster, works with WiFi/IP)
+      try {
+        console.log('Trying low accuracy geolocation...');
+        position = await tryGetPosition(false, 20000);
+      } catch (lowAccuracyError) {
+        console.log('Low accuracy failed:', lowAccuracyError.code, lowAccuracyError.message);
+        lastError = lowAccuracyError;
+      }
+
+      // Strategy 2: If low accuracy failed with timeout, try high accuracy
+      if (!position && lastError && lastError.code === 3) { // TIMEOUT
+        try {
+          console.log('Trying high accuracy geolocation...');
+          position = await tryGetPosition(true, 30000);
+        } catch (highAccuracyError) {
+          console.log('High accuracy failed:', highAccuracyError.code, highAccuracyError.message);
+          lastError = highAccuracyError;
+        }
+      }
+
+      // If we still don't have a position, throw the last error
+      if (!position) {
+        throw lastError || new Error('Unable to get location');
+      }
+
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+
+      console.log(`Got location: ${lat}, ${lon} (accuracy: ${position.coords.accuracy}m)`);
+
+      // Store coordinates for device info
+      this.setupData.geolocation = {
+        latitude: lat,
+        longitude: lon,
+        accuracy: position.coords.accuracy
+      };
+
+      // Try to reverse geocode using OpenStreetMap Nominatim API
+      let locationSet = false;
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`,
+          {
+            headers: {
+              'Accept': 'application/json'
+            }
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          const address = data.address || {};
+
+          // Build location string from address components
+          let location = '';
+          // Try different address fields in order of preference
+          const road = address.road || address.street || address.pedestrian || address.footway || '';
+          const houseNumber = address.house_number || '';
+          const city = address.city || address.town || address.village || address.hamlet || address.municipality || '';
+          const state = address.state || address.region || address.county || '';
+
+          if (houseNumber && road) {
+            location = `${houseNumber} ${road}`;
+          } else if (road) {
+            location = road;
+          }
+          if (city) location += (location ? ', ' : '') + city;
+          if (state) location += (location ? ', ' : '') + state;
+
+          if (location) {
+            document.getElementById('device-name').value = location;
+            locationSet = true;
+          }
+        }
+      } catch (geocodeError) {
+        console.log('Geocoding failed:', geocodeError);
+      }
+
+      // Fallback to coordinates if geocoding didn't work
+      if (!locationSet) {
+        document.getElementById('device-name').value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+      }
+
+      this.hideLoading();
+    } catch (error) {
+      this.hideLoading();
+      this.showError(getGeolocationErrorMessage(error));
+    }
   }
 
   async loadWiFiStep() {
+    await this.scanWiFiNetworks();
+  }
+
+  async scanWiFiNetworks(retryCount = 0) {
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds between retries
+    
     this.showLoading('Scanning for WiFi networks...');
     
     try {
+      // Check if we have a valid token before attempting WiFi scan
+      const token = localStorage.getItem('authToken');
+      if (!token) {
+        this.hideLoading();
+        this.showError('Authentication required. Please go back and login again.');
+        console.error('No auth token found in localStorage');
+        return;
+      }
+      
+      console.log(`Scanning WiFi (attempt ${retryCount + 1}/${maxRetries + 1}) with token:`, token.substring(0, 20) + '...');
       const result = await this.api.getWiFiInfoList();
       
-      if (result.success && result.data.networks) {
-        this.displayWiFiNetworks(result.data.networks);
+      if (result.success && result.data) {
+        // The API returns wifiInfoList, not networks
+        const networks = result.data.wifiInfoList || [];
+        console.log('Found', networks.length, 'WiFi networks');
+        
+        // If no networks found and we haven't exhausted retries, wait and try again
+        if (networks.length === 0 && retryCount < maxRetries) {
+          console.log(`No networks found, retrying in ${retryDelay}ms...`);
+          this.showLoading(`Scanning for WiFi networks... (attempt ${retryCount + 2}/${maxRetries + 1})`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          return this.scanWiFiNetworks(retryCount + 1);
+        }
+        
+        if (networks.length === 0) {
+          // Show message but don't error - user can rescan
+          this.displayWiFiNetworks([]);
+          this.hideLoading();
+          this.showError('No WiFi networks found after multiple scans. Click "Rescan Networks" to try again, or check your WiFi adapter.');
+          return;
+        }
+        
+        // Transform the data to match our expected format
+        const transformedNetworks = networks.map(network => ({
+          ssid: network.ssid,
+          signal: network.signal,
+          security: network.auth === 0 ? 'Open' : 'WPA2',
+          connected: network.connectedStatus === 1,
+          bssid: network.bssid,
+          frequency: network.frequency
+        }));
+        
+        this.displayWiFiNetworks(transformedNetworks);
       } else {
-        this.showError('Failed to scan WiFi networks: ' + (result.error || 'Unknown error'));
+        // Check if it's an auth error
+        if (result.code === 401 || result.error?.includes('401')) {
+          this.showError('Authentication failed. Please go back and login again.');
+          console.error('WiFi scan auth error:', result);
+        } else {
+          this.showError('Failed to scan WiFi networks: ' + (result.error || 'Unknown error'));
+        }
       }
     } catch (error) {
       console.error('WiFi scan error:', error);
-      this.showError('Failed to scan WiFi networks');
+      this.showError('Failed to scan WiFi networks: ' + error.message);
     } finally {
       this.hideLoading();
     }
+  }
+
+  async rescanWiFi() {
+    console.log('User requested WiFi rescan');
+    await this.scanWiFiNetworks();
   }
 
   displayWiFiNetworks(networks) {
@@ -360,59 +453,77 @@ class OOBEApp {
     const confirmPassword = document.getElementById('confirm-password').value;
 
     // Validation
-    if (this.setupData.userInfo?.firstLogin) {
-      if (!newPassword || newPassword.length < 8) {
-        this.showError('Password must be at least 8 characters long');
-        return;
-      }
-
-      if (newPassword !== confirmPassword) {
-        this.showError('Passwords do not match');
-        return;
-      }
-
-      // Update password
-      this.showLoading('Setting password...');
-      const result = await this.api.updatePassword(oldPassword || 'admin', newPassword);
-      
-      if (!result.success) {
-        this.hideLoading();
-        this.showError('Failed to set password: ' + (result.error || 'Unknown error'));
-        return;
-      }
-
-      // Login with new password (try both admin and recamera usernames)
-      let loginResult = await this.api.login('admin', newPassword);
-      if (!loginResult.success) {
-        loginResult = await this.api.login('recamera', newPassword);
-      }
-      this.hideLoading();
-
-      if (!loginResult.success) {
-        this.showError('Password set but login failed. Please refresh and try again.');
-        return;
-      }
-    } else {
-      // Just login
-      if (!oldPassword) {
-        this.showError('Please enter your password');
-        return;
-      }
-
-      this.showLoading('Logging in...');
-      // Try both admin and recamera usernames
-      let loginResult = await this.api.login('admin', oldPassword);
-      if (!loginResult.success) {
-        loginResult = await this.api.login('recamera', oldPassword);
-      }
-      this.hideLoading();
-
-      if (!loginResult.success) {
-        this.showError('Invalid password');
-        return;
-      }
+    if (!oldPassword) {
+      this.showError('Please enter the current password');
+      return;
     }
 
+    if (!newPassword || newPassword.length < 8) {
+      this.showError('New password must be at least 8 characters long');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      this.showError('Passwords do not match');
+      return;
+    }
+
+    this.showLoading('Logging in...');
+    
+    // First, login with the old password to get a token
+    let loginResult = await this.api.login('recamera', oldPassword);
+    if (!loginResult.success) {
+      loginResult = await this.api.login('admin', oldPassword);
+    }
+
+    if (!loginResult.success) {
+      this.hideLoading();
+      this.showError('Invalid current password');
+      return;
+    }
+
+    // Now we have a token, use it to change the password
+    this.showLoading('Setting new password...');
+    const result = await this.api.updatePassword(oldPassword, newPassword);
+    
+    console.log('Password update result:', result);
+    
+    if (!result.success) {
+      this.hideLoading();
+      const errorMsg = result.error || result.msg || 'Unknown error';
+      this.showError('Failed to set password: ' + errorMsg);
+      console.error('Password update failed:', result);
+      return;
+    }
+
+    // Login with new password to get a fresh token
+    this.showLoading('Verifying new password...');
+    loginResult = await this.api.login('recamera', newPassword);
+    if (!loginResult.success) {
+      loginResult = await this.api.login('admin', newPassword);
+    }
+
+    if (!loginResult.success) {
+      this.hideLoading();
+      this.showError('Password set but login failed. Please refresh and try again.');
+      console.error('Login with new password failed:', loginResult);
+      return;
+    }
+    
+    console.log('Successfully logged in with new password');
+
+    // Fetch device and user info now that we're logged in
+    const deviceResult = await this.api.queryDeviceInfo();
+    if (deviceResult.success) {
+      this.setupData.deviceInfo = deviceResult.data;
+    }
+
+    const userResult = await this.api.queryUserInfo();
+    if (userResult.success) {
+      this.setupData.userInfo = userResult.data;
+    }
+
+    this.hideLoading();
     this.showStep(3);
   }
 
@@ -552,7 +663,7 @@ class OOBEApp {
     // Get network MAC addresses from OOBE server
     let networkInfo = { interfaces: {} };
     try {
-      const response = await fetch('/api/getNetworkInfo');
+      const response = await fetch('/oobe/api/getNetworkInfo');
       if (response.ok) {
         networkInfo = await response.json();
       }
@@ -591,7 +702,7 @@ class OOBEApp {
 
     // Save to OOBE server which will write to /userdata/device_info.json
     try {
-      const response = await fetch('/api/saveDeviceInfo', {
+      const response = await fetch('/oobe/api/saveDeviceInfo', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -607,6 +718,14 @@ class OOBEApp {
       }
     } catch (e) {
       console.error('Error saving device info:', e);
+    }
+
+    // Signal OOBE completion - removes /etc/oobe/flag
+    try {
+      await fetch('/oobe/api/complete', { method: 'POST' });
+      console.log('OOBE flag removed');
+    } catch (e) {
+      console.error('Error completing OOBE:', e);
     }
   }
 

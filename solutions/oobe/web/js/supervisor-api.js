@@ -32,9 +32,18 @@ class SupervisorAPI {
       },
     };
 
-    // Add auth token if required and available
-    if (requiresAuth && this.token) {
-      options.headers['Authorization'] = `Bearer ${this.token}`;
+    // Always get the latest token from localStorage before making a request
+    // This ensures we use the token even if it was set after the API instance was created
+    if (requiresAuth) {
+      const currentToken = localStorage.getItem('authToken');
+      if (currentToken) {
+        options.headers['Authorization'] = `Bearer ${currentToken}`;
+        console.log(`[API] ${method} ${endpoint} with auth token (${currentToken.substring(0, 20)}...)`);
+      } else {
+        console.warn(`[API] ${method} ${endpoint} requires auth but no token found!`);
+      }
+    } else {
+      console.log(`[API] ${method} ${endpoint} (no auth required)`);
     }
 
     // Add body for POST requests
@@ -44,16 +53,48 @@ class SupervisorAPI {
 
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, options);
-      const data = await response.json();
+
+      // Check if response is OK before parsing
+      if (!response.ok) {
+        // Try to get error message from response body
+        let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const text = await response.text();
+          // Try to parse as JSON for error details
+          const errorData = JSON.parse(text);
+          if (errorData.msg) errorMsg = errorData.msg;
+          else if (errorData.error) errorMsg = errorData.error;
+        } catch (e) {
+          // Response wasn't JSON, use status text
+        }
+        console.error(`[API] Request failed: ${method} ${endpoint} - ${errorMsg}`);
+        return { success: false, error: errorMsg, code: response.status };
+      }
+
+      // Parse JSON response
+      const text = await response.text();
+      if (!text) {
+        return { success: false, error: 'Empty response from server' };
+      }
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (parseError) {
+        console.error('Failed to parse response as JSON:', text.substring(0, 200));
+        return { success: false, error: 'Invalid response from server' };
+      }
 
       if (data.code === 0) {
+        console.log(`[API] Success: ${method} ${endpoint}`);
         return { success: true, data: data.data };
       } else {
-        return { success: false, error: data.msg, code: data.code };
+        console.error(`[API] Failed: ${method} ${endpoint} - Code: ${data.code}, Message: ${data.msg}`);
+        return { success: false, error: data.msg || 'Unknown error', code: data.code, msg: data.msg };
       }
     } catch (error) {
       console.error('API request failed:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: error.message || 'Network error' };
     }
   }
 
@@ -76,13 +117,13 @@ class SupervisorAPI {
   // ========== System Information ==========
 
   async getVersion() {
-    return this.request('/api/version', 'GET', null, false);
+    return this.request('/api/version');
   }
 
   // ========== User Management ==========
 
   async queryUserInfo() {
-    return this.request('/api/userMgr/queryUserInfo', 'GET', null, false);
+    return this.request('/api/userMgr/queryUserInfo');
   }
 
   async login(username, password) {
@@ -102,7 +143,7 @@ class SupervisorAPI {
     return this.request('/api/userMgr/updatePassword', 'POST', {
       oldPassword,
       newPassword
-    }, false);
+    });
   }
 
   async setSSHStatus(enabled) {
@@ -114,7 +155,7 @@ class SupervisorAPI {
   // ========== Device Management ==========
 
   async queryDeviceInfo() {
-    return this.request('/api/deviceMgr/queryDeviceInfo', 'GET', null, false);
+    return this.request('/api/deviceMgr/queryDeviceInfo');
   }
 
   async getDeviceInfo() {
@@ -132,7 +173,7 @@ class SupervisorAPI {
   }
 
   async queryServiceStatus() {
-    return this.request('/api/deviceMgr/queryServiceStatus', 'GET', null, false);
+    return this.request('/api/deviceMgr/queryServiceStatus');
   }
 
   async setPower(action) {
@@ -208,7 +249,7 @@ class SupervisorAPI {
   // ========== Camera ==========
 
   async getChannels() {
-    return this.request('/api/channels', 'GET', null, false);
+    return this.request('/api/channels');
   }
 
   async getCameraWebsocketUrl() {
@@ -243,7 +284,7 @@ class SupervisorAPI {
     if (schema) {
       body.schema = schema;
     }
-    return this.request('/api/qr/scan', 'POST', body, false);
+    return this.request('/api/qr/scan', 'POST', body);
   }
 
   /**
@@ -252,7 +293,7 @@ class SupervisorAPI {
    * @returns {Promise} {success: boolean, data: {scan_id: string, status: string, result?: object}}
    */
   async getQRScanStatus(scanId) {
-    return this.request(`/api/qr/scan/${scanId}`, 'GET', null, false);
+    return this.request(`/api/qr/scan/${scanId}`);
   }
 
   /**
@@ -261,7 +302,7 @@ class SupervisorAPI {
    * @returns {Promise} {success: boolean, data: {scan_id: string, status: string}}
    */
   async cancelQRScan(scanId) {
-    return this.request(`/api/qr/scan/${scanId}`, 'DELETE', null, false);
+    return this.request(`/api/qr/scan/${scanId}`, 'DELETE');
   }
 
   /**

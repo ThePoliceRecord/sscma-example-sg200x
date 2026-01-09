@@ -58,15 +58,8 @@
         <div class="card">
           <h2 class="card-title">Welcome to Authority Alert</h2>
           <p>Thank you for choosing Authority Alert. This setup wizard will help you configure your device.</p>
-          
-          <div class="device-info" style="margin-top: 1.5rem;">
-            <div class="device-info-item">
-              <span class="device-info-label">Serial Number:</span>
-              <span class="device-info-value" id="device-serial">Loading...</span>
-            </div>
-          </div>
 
-          <div class="btn-group">
+          <div class="btn-group" style="margin-top: 2rem;">
             <button class="btn btn-primary" onclick="oobeApp.handleWelcomeNext()">
               Get Started →
             </button>
@@ -90,7 +83,7 @@
                 placeholder="Enter current password"
                 autocomplete="current-password"
               />
-              <div class="form-help">Default password is "admin" for first-time setup</div>
+              <div class="form-help">Leave blank for first-time setup (default password will be used)</div>
             </div>
 
             <div class="form-group">
@@ -195,16 +188,22 @@
           <h2 class="card-title">Connect to WiFi</h2>
           <p>Select a WiFi network to connect your device to the internet.</p>
 
+          <div style="margin: 1rem 0;">
+            <button type="button" class="btn btn-secondary" onclick="oobeApp.rescanWiFi()">
+              🔄 Rescan Networks
+            </button>
+          </div>
+
           <div id="wifi-list" class="wifi-list" style="margin: 1.5rem 0;">
             <!-- WiFi networks will be populated here -->
           </div>
 
           <div id="wifi-password-group" class="form-group hidden">
             <label class="form-label" for="wifi-password">WiFi Password</label>
-            <input 
-              type="password" 
-              id="wifi-password" 
-              class="form-input" 
+            <input
+              type="password"
+              id="wifi-password"
+              class="form-input"
               placeholder="Enter WiFi password"
             />
           </div>

@@ -13,6 +13,7 @@ import (
 	"supervisor/internal/config"
 	"supervisor/internal/handler"
 	"supervisor/internal/middleware"
+	"supervisor/internal/oobe"
 	"supervisor/internal/system"
 	"supervisor/internal/tls"
 	"supervisor/pkg/logger"
@@ -27,6 +28,7 @@ type Server struct {
 	wifiHandler *handler.WiFiHandler
 	qrHandler   *handler.QRHandler
 	tlsManager  *tls.Manager
+	oobeManager *oobe.Manager
 }
 
 // New creates a new Server.
@@ -45,6 +47,7 @@ func New(cfg *config.Config) *Server {
 		cfg:         cfg,
 		authManager: auth.NewAuthManager(cfg),
 		tlsManager:  tls.NewManagerWithSubject(cfg.CertDir, certSubject),
+		oobeManager: oobe.New(),
 	}
 }
 
@@ -61,6 +64,12 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to get TLS config: %w", err)
 	}
 
+	// Start OOBE manager (checks flag and starts OOBE if needed)
+	if err := s.oobeManager.Start(); err != nil {
+		logger.Warning("OOBE initialization failed: %v", err)
+		// Non-fatal - continue with normal operation
+	}
+
 	apiMux := s.setupRoutes()
 
 	// Create top-level mux that routes WebSocket directly (bypass middleware)
@@ -69,14 +78,17 @@ func (s *Server) Start() error {
 	// WebSocket camera proxy - direct connection (no middleware)
 	rootMux.HandleFunc("/ws/camera", handler.CameraWebSocketProxy)
 
-	// All other routes go through middleware
-	rootMux.Handle("/", middleware.Chain(
+	// Apply middleware chain to the base handler
+	baseHandler := middleware.Chain(
 		apiMux,
 		middleware.Recovery,
 		middleware.SecureHeaders,
 		middleware.Logging,
 		middleware.CORS,
-	))
+	)
+
+	// Wrap with OOBE handler - proxies to OOBE when active, otherwise uses base handler
+	rootMux.Handle("/", s.oobeManager.Handler(baseHandler))
 
 	// HTTP server - redirects all traffic to HTTPS
 	// Only start if HTTPPort is configured (non-empty)
@@ -148,6 +160,13 @@ func (s *Server) httpsRedirectHandler() http.Handler {
 
 // Stop gracefully stops the server.
 func (s *Server) Stop(ctx context.Context) error {
+	// Stop OOBE manager first
+	if s.oobeManager != nil {
+		if err := s.oobeManager.Stop(ctx); err != nil {
+			logger.Error("OOBE manager shutdown error: %v", err)
+		}
+	}
+
 	// Stop WiFi handler
 	if s.wifiHandler != nil {
 		s.wifiHandler.Stop()
@@ -192,16 +211,7 @@ func (s *Server) setupRoutes() http.Handler {
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
-		"/api/version":                      true,
-		"/api/channels":                     true, // Channel discovery for video player
-		"/api/qr/scan":                      true, // QR scanning for OOBE
-		"/api/qr/scan/":                     true, // QR scan status for OOBE
-		"/api/qr/health":                    true, // QR health check
-		"/api/userMgr/login":                true,
-		"/api/userMgr/queryUserInfo":        true, // Needed to check firstLogin status
-		"/api/userMgr/updatePassword":       true, // Needed for first login password change
-		"/api/deviceMgr/queryDeviceInfo":    true, // Needed for App init (gets SN)
-		"/api/deviceMgr/queryServiceStatus": true, // Needed for loading screen
+		"/api/userMgr/login": true,
 	}
 
 	// Auth middleware

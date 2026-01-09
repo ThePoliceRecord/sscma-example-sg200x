@@ -170,6 +170,9 @@
           buildInputs = [ fhsEnv ];
 
           shellHook = ''
+            # Clear NoMachine's LD_PRELOAD to avoid warnings in Nix shell
+            unset LD_PRELOAD
+
             echo "════════════════════════════════════════════════════════════"
             echo " Starting SSCMA SG200X Development Environment"
             echo "════════════════════════════════════════════════════════════"

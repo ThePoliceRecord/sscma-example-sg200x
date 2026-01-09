@@ -49,12 +49,12 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
   struct mg_http_message *hm = (struct mg_http_message *) ev_data;
   const struct app_config *cfg = (const struct app_config *) c->fn_data;
 
-  if (mg_strcmp(hm->uri, mg_str("/api/health")) == 0) {
+  if (mg_strcmp(hm->uri, mg_str("/oobe/api/health")) == 0) {
     reply_json(c, 200, "{\"ok\":true,\"service\":\"oobe\"}");
     return;
   }
 
-  if (mg_strcmp(hm->uri, mg_str("/api/getNetworkInfo")) == 0) {
+  if (mg_strcmp(hm->uri, mg_str("/oobe/api/getNetworkInfo")) == 0) {
     char eth0_mac[32] = {0};
     char wlan0_mac[32] = {0};
     
@@ -70,10 +70,10 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     return;
   }
 
-  if (mg_strcmp(hm->uri, mg_str("/api/saveDeviceInfo")) == 0 && mg_strcmp(hm->method, mg_str("POST")) == 0) {
+  if (mg_strcmp(hm->uri, mg_str("/oobe/api/saveDeviceInfo")) == 0 && mg_strcmp(hm->method, mg_str("POST")) == 0) {
     // Create userdata directory if it doesn't exist
     mkdir("/userdata", 0755);
-    
+
     // Write device info to file
     FILE *fp = fopen("/userdata/device_info.json", "w");
     if (fp) {
@@ -83,6 +83,18 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     } else {
       char error_msg[256];
       snprintf(error_msg, sizeof(error_msg), "{\"ok\":false,\"error\":\"Failed to save: %s\"}", strerror(errno));
+      reply_json(c, 500, error_msg);
+    }
+    return;
+  }
+
+  if (mg_strcmp(hm->uri, mg_str("/oobe/api/complete")) == 0 && mg_strcmp(hm->method, mg_str("POST")) == 0) {
+    // Remove the OOBE flag file to signal completion
+    if (unlink("/etc/oobe/flag") == 0) {
+      reply_json(c, 200, "{\"ok\":true,\"message\":\"OOBE completed\"}");
+    } else {
+      char error_msg[256];
+      snprintf(error_msg, sizeof(error_msg), "{\"ok\":false,\"error\":\"Failed to remove flag: %s\"}", strerror(errno));
       reply_json(c, 500, error_msg);
     }
     return;

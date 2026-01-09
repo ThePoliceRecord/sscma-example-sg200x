@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import { getWebSocketUrlApi } from "@/api";
+import { getToken } from "@/store/user";
 import jmuxer from "jmuxer";
 
 let jmuxerIns: any;
@@ -61,7 +62,12 @@ export default function usehookData() {
 
   // Fetch channel list from API
   useEffect(() => {
-    fetch('/api/channels')
+    const token = getToken();
+    fetch('/api/channels', {
+      headers: {
+        'Authorization': token || '',
+      }
+    })
       .then(res => res.json())
       .then((response: any) => {
         // Handle standard API response format: {code, msg, data}

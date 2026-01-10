@@ -149,6 +149,7 @@ export function useData() {
         const { code, data } = await getSystemUpdateVesionInfoApi({
           channel: deviceInfo.channel,
           url: url,
+          force: checkCountRef.current === 0,
         });
 
         checkCountRef.current++;

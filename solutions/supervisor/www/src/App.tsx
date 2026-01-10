@@ -6,7 +6,6 @@ import { createHashRouter, RouterProvider } from "react-router-dom";
 import Routes from "@/router";
 import Login from "@/views/login";
 import { queryDeviceInfoApi } from "@/api/device/index";
-import { getUserInfoApi } from "@/api/user";
 import useUserStore from "@/store/user";
 import useConfigStore from "@/store/config";
 import { Version } from "@/utils";
@@ -36,7 +35,6 @@ const App = () => {
     currentSn,
     usersBySn,
     setCurrentSn,
-    updateFirstLogin,
     clearCurrentUserInfo,
   } = useUserStore();
 
@@ -59,18 +57,6 @@ const App = () => {
       updateDeviceInfo(deviceInfo);
       const sn = deviceInfo.sn;
       setCurrentSn(sn);
-      if (sn) {
-        // Check if device is first login, if first login, go to login page
-        const response = await getUserInfoApi();
-        if (response.code == 0) {
-          const data = response.data;
-          const firstLogin = data.firstLogin;
-          updateFirstLogin(firstLogin);
-          if (firstLogin) {
-            clearCurrentUserInfo();
-          }
-        }
-      }
     } catch (error) {
       // Don't clear user info, likely service not started timeout
     }

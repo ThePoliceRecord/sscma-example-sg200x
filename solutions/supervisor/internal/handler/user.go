@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -75,27 +76,31 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // QueryUserInfo returns user information.
 func (h *UserHandler) QueryUserInfo(w http.ResponseWriter, r *http.Request) {
-	username := auth.GetUsername()
+	username := auth.GetUsernameFromRequest(r)
+	logger.Info("[SSH DEBUG] QueryUserInfo called, username from auth: %s", username)
 
 	// Use default username if not set
 	if username == "" {
 		username = DefaultUsername
+		logger.Warn("[SSH DEBUG] Username was empty, using default: %s", username)
 	}
 
 	// Check SSH status
 	sshEnabled := isSSHEnabled()
+	logger.Info("[SSH DEBUG] SSH enabled status: %v", sshEnabled)
 
 	// Get SSH keys
 	sshKeys := getSSHKeys(username)
+	logger.Info("[SSH DEBUG] Retrieved %d SSH keys for user %s", len(sshKeys), username)
 
-	// Check if this is first login (password is not set or default)
-	firstLogin := isFirstLogin(username)
+	// Disabled firstLogin tracking - always return false
+	firstLogin := false
 
 	api.WriteSuccess(w, map[string]interface{}{
 		"userName":   username,
 		"firstLogin": firstLogin,
 		"sshEnabled": sshEnabled,
-		"sshKeys":    sshKeys,
+		"sshkeyList": sshKeys, // Changed from "sshKeys" to "sshkeyList" to match frontend
 	})
 }
 
@@ -114,7 +119,7 @@ func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := auth.GetUsername()
+	username := auth.GetUsernameFromRequest(r)
 
 	// Check if this is first login - only allow unauthenticated access for first login
 	if !isFirstLogin(username) {
@@ -178,7 +183,8 @@ func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 
 // SetSSHStatusRequest represents an SSH status update request.
 type SetSSHStatusRequest struct {
-	Enable bool `json:"enable"`
+	Enable  bool `json:"enable"`
+	Enabled bool `json:"enabled"` // Support both for backwards compatibility
 }
 
 // SetSSHStatus enables or disables SSH.
@@ -190,20 +196,35 @@ func (h *UserHandler) SetSSHStatus(w http.ResponseWriter, r *http.Request) {
 
 	var req SetSSHStatusRequest
 	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("[SSH DEBUG] Failed to parse SetSSHStatus request body: %v", err)
 		api.WriteError(w, -1, "Invalid request body")
 		return
 	}
 
+	// Support both 'enable' and 'enabled' fields
+	enable := req.Enable || req.Enabled
+	logger.Info("[SSH DEBUG] SetSSHStatus called with Enable=%v", enable)
+
 	var err error
-	if req.Enable {
-		err = exec.Command("systemctl", "start", "dropbear").Run()
-		if err == nil {
-			err = exec.Command("systemctl", "enable", "dropbear").Run()
+	if enable {
+		// Try SysV init script first, fall back to systemctl
+		if _, statErr := os.Stat("/etc/init.d/S50dropbear"); statErr == nil {
+			err = exec.Command("/etc/init.d/S50dropbear", "start").Run()
+		} else {
+			err = exec.Command("systemctl", "start", "dropbear").Run()
+			if err == nil {
+				err = exec.Command("systemctl", "enable", "dropbear").Run()
+			}
 		}
 	} else {
-		err = exec.Command("systemctl", "stop", "dropbear").Run()
-		if err == nil {
-			err = exec.Command("systemctl", "disable", "dropbear").Run()
+		// Try SysV init script first, fall back to systemctl
+		if _, statErr := os.Stat("/etc/init.d/S50dropbear"); statErr == nil {
+			err = exec.Command("/etc/init.d/S50dropbear", "stop").Run()
+		} else {
+			err = exec.Command("systemctl", "stop", "dropbear").Run()
+			if err == nil {
+				err = exec.Command("systemctl", "disable", "dropbear").Run()
+			}
 		}
 	}
 
@@ -213,13 +234,16 @@ func (h *UserHandler) SetSSHStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.WriteSuccess(w, map[string]interface{}{"enabled": req.Enable})
+	logger.Info("[SSH DEBUG] SetSSHStatus completed successfully, Enable=%v", enable)
+	api.WriteSuccess(w, map[string]interface{}{"enabled": enable})
 }
 
 // AddSSHKeyRequest represents an SSH key addition request.
 type AddSSHKeyRequest struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
+	Key   string `json:"key"`   // Legacy field
+	Value string `json:"value"` // New field from frontend
+	Name  string `json:"name"`
+	Time  string `json:"time"` // Optional field from frontend
 }
 
 // AddSSHKey adds an SSH public key.
@@ -231,22 +255,40 @@ func (h *UserHandler) AddSSHKey(w http.ResponseWriter, r *http.Request) {
 
 	var req AddSSHKeyRequest
 	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("[SSH DEBUG] Failed to parse AddSSHKey request body: %v", err)
 		api.WriteError(w, -1, "Invalid request body")
 		return
 	}
 
-	if req.Key == "" {
+	// Support both 'key' and 'value' fields
+	sshKey := req.Key
+	if sshKey == "" {
+		sshKey = req.Value
+	}
+
+	logger.Info("[SSH DEBUG] AddSSHKey called with Key length=%d, Name=%s", len(sshKey), req.Name)
+
+	if sshKey == "" {
+		logger.Error("[SSH DEBUG] SSH key is empty")
 		api.WriteError(w, -1, "SSH key required")
 		return
 	}
 
 	// Validate SSH key format
-	if !isValidSSHKey(req.Key) {
+	if !isValidSSHKey(sshKey) {
+		logger.Error("[SSH DEBUG] Invalid SSH key format: %s", sshKey[:min(50, len(sshKey))])
 		api.WriteError(w, -1, "Invalid SSH key format")
 		return
 	}
 
-	username := auth.GetUsername()
+	username := auth.GetUsernameFromRequest(r)
+	logger.Info("[SSH DEBUG] Username from auth context: %s", username)
+
+	// Use default username if not set
+	if username == "" {
+		username = DefaultUsername
+		logger.Warn("[SSH DEBUG] Username was empty, using default: %s", username)
+	}
 
 	// Validate username to prevent path traversal
 	if !isValidUsername(username) {
@@ -273,6 +315,12 @@ func (h *UserHandler) AddSSHKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set ownership of .ssh directory to the user
+	if err := chownToUser(sshDir, username); err != nil {
+		logger.Error("Failed to set .ssh directory ownership: %v", err)
+		// Continue anyway - the key might still work
+	}
+
 	// Append key to authorized_keys
 	f, err := os.OpenFile(authKeysFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
@@ -282,7 +330,7 @@ func (h *UserHandler) AddSSHKey(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	keyLine := req.Key
+	keyLine := sshKey
 	if req.Name != "" {
 		keyLine = keyLine + " " + req.Name
 	}
@@ -292,6 +340,13 @@ func (h *UserHandler) AddSSHKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set ownership of authorized_keys file to the user
+	if err := chownToUser(authKeysFile, username); err != nil {
+		logger.Error("Failed to set authorized_keys ownership: %v", err)
+		// Continue anyway - the key might still work
+	}
+
+	logger.Info("[SSH DEBUG] SSH key added successfully for user %s", username)
 	api.WriteSuccess(w, map[string]interface{}{"message": "SSH key added successfully"})
 }
 
@@ -309,16 +364,27 @@ func (h *UserHandler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 
 	var req DeleteSSHKeyRequest
 	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("[SSH DEBUG] Failed to parse DeleteSSHKey request body: %v", err)
 		api.WriteError(w, -1, "Invalid request body")
 		return
 	}
 
+	logger.Info("[SSH DEBUG] DeleteSSHKey called with ID=%s", req.ID)
+
 	if req.ID == "" {
+		logger.Error("[SSH DEBUG] Key ID is empty")
 		api.WriteError(w, -1, "Key ID required")
 		return
 	}
 
-	username := auth.GetUsername()
+	username := auth.GetUsernameFromRequest(r)
+	logger.Info("[SSH DEBUG] Username from auth context: %s", username)
+
+	// Use default username if not set
+	if username == "" {
+		username = DefaultUsername
+		logger.Warn("[SSH DEBUG] Username was empty, using default: %s", username)
+	}
 
 	// Validate username to prevent path traversal
 	if !isValidUsername(username) {
@@ -363,16 +429,45 @@ func (h *UserHandler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure ownership is set correctly after writing
+	if err := chownToUser(authKeysFile, username); err != nil {
+		logger.Error("Failed to set authorized_keys ownership: %v", err)
+	}
+
+	logger.Info("[SSH DEBUG] SSH key deleted successfully for user %s", username)
 	api.WriteSuccess(w, map[string]interface{}{"message": "SSH key deleted successfully"})
 }
 
 // Helper functions
 
 func isSSHEnabled() bool {
-	cmd := exec.Command("systemctl", "is-active", "dropbear")
+	// Method 1: Check if dropbear process is running using pidof
+	cmd := exec.Command("pidof", "dropbear")
 	if err := cmd.Run(); err == nil {
+		logger.Info("[SSH DEBUG] isSSHEnabled: dropbear process found via pidof")
 		return true
 	}
+
+	// Method 2: Check the PID file
+	if pidData, err := os.ReadFile("/var/run/dropbear.pid"); err == nil {
+		pidStr := strings.TrimSpace(string(pidData))
+		if pidStr != "" {
+			// Verify the process exists
+			if _, err := os.Stat("/proc/" + pidStr); err == nil {
+				logger.Info("[SSH DEBUG] isSSHEnabled: dropbear PID file exists and process running")
+				return true
+			}
+		}
+	}
+
+	// Method 3: Fall back to systemctl for systemd-based systems
+	cmd = exec.Command("systemctl", "is-active", "dropbear")
+	if err := cmd.Run(); err == nil {
+		logger.Info("[SSH DEBUG] isSSHEnabled: dropbear active via systemctl")
+		return true
+	}
+
+	logger.Info("[SSH DEBUG] isSSHEnabled: dropbear not running")
 	return false
 }
 
@@ -398,20 +493,22 @@ func getSSHKeys(username string) []map[string]interface{} {
 		}
 		parts := strings.Fields(line)
 		key := map[string]interface{}{
-			"id":   strconv.Itoa(i + 1),
-			"type": "",
-			"key":  "",
-			"name": "",
+			"id":      strconv.Itoa(i + 1),
+			"type":    "",
+			"value":   "", // Changed from "key" to "value" to match frontend
+			"name":    "",
+			"addTime": "", // Optional field that frontend may use
 		}
 		if len(parts) >= 1 {
 			key["type"] = parts[0]
 		}
 		if len(parts) >= 2 {
 			// Truncate key for display
-			if len(parts[1]) > 20 {
-				key["key"] = parts[1][:10] + "..." + parts[1][len(parts[1])-10:]
+			fullKey := parts[1]
+			if len(fullKey) > 20 {
+				key["value"] = fullKey[:10] + "..." + fullKey[len(fullKey)-10:]
 			} else {
-				key["key"] = parts[1]
+				key["value"] = fullKey
 			}
 		}
 		if len(parts) >= 3 {
@@ -523,4 +620,29 @@ func verifyDefaultPassword(hashedPassword string) bool {
 func clearFirstLoginFlag() {
 	firstLoginFile := "/etc/recamera.conf/first_login"
 	os.Remove(firstLoginFile)
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// chownToUser changes ownership of a file or directory to the specified user
+func chownToUser(path, username string) error {
+	u, err := user.Lookup(username)
+	if err != nil {
+		return err
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return err
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return err
+	}
+	return os.Chown(path, uid, gid)
 }

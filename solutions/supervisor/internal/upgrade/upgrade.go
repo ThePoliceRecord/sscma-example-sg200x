@@ -5,11 +5,15 @@ import (
 	"archive/zip"
 	"bufio"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +50,8 @@ const (
 	ConfigDir       = "/etc/recamera.conf"
 	UpgradeConfFile = "/etc/recamera.conf/upgrade"
 	UpgradeTmpDir   = "/userdata/.upgrade"
-	UpgradeFilesDir = "/tmp/upgrade"
+	// Keep upgrade metadata (checksum/version/url files) on persistent storage; /tmp may be too small/volatile.
+	UpgradeFilesDir = "/userdata/.upgrade-files"
 	WorkDir         = "/tmp/supervisor"
 )
 
@@ -57,6 +62,8 @@ const (
 	UpgradeMutexFile  = WorkDir + "/upgrade.mutex"
 	UpgradeProgFile   = WorkDir + "/upgrade.prog"
 	UpgradeProgTmp    = WorkDir + "/upgrade.prog.tmp"
+	// UpdateCheckProgFile stores progress/status for "check for updates" (distinct from OTA download/flash progress).
+	UpdateCheckProgFile = WorkDir + "/update_check.prog"
 )
 
 // UpdateStatus represents the status of update availability.
@@ -72,7 +79,11 @@ const (
 type UpdateVersion struct {
 	OSName    string       `json:"osName"`
 	OSVersion string       `json:"osVersion"`
+	CheckedAt int64        `json:"checkedAt,omitempty"`
 	Status    UpdateStatus `json:"status"`
+	// Error captures the last update-check error (if any). When set, osName/osVersion may
+	// reflect the last known cached value.
+	Error string `json:"error,omitempty"`
 }
 
 // UpdateProgress represents upgrade progress.
@@ -89,6 +100,17 @@ type VersionInfo struct {
 	Version  string
 }
 
+// StagedPackageInfo describes an OTA package that has been uploaded to the device
+// and staged for installation.
+type StagedPackageInfo struct {
+	Exists   bool   `json:"exists"`
+	FileName string `json:"fileName"`
+	Checksum string `json:"checksum"`
+	OSName   string `json:"osName"`
+	Version  string `json:"version"`
+	Size     int64  `json:"size"`
+}
+
 // UpgradeManager handles system upgrades.
 type UpgradeManager struct {
 	mu          sync.RWMutex
@@ -96,6 +118,7 @@ type UpgradeManager struct {
 	downloading bool
 	upgrading   bool
 	cancelled   bool
+	querying    bool
 }
 
 // NewUpgradeManager creates a new upgrade manager.
@@ -106,6 +129,89 @@ func NewUpgradeManager() *UpgradeManager {
 	os.MkdirAll(UpgradeTmpDir, 0755)
 	os.MkdirAll(UpgradeFilesDir, 0755)
 	return &UpgradeManager{}
+}
+
+// GetStagedLocalPackageInfo returns metadata about an uploaded OTA package, if present.
+func (m *UpgradeManager) GetStagedLocalPackageInfo() (*StagedPackageInfo, error) {
+	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
+	info, err := m.parseVersionInfo(checksumPath)
+	if err != nil {
+		return &StagedPackageInfo{Exists: false}, nil
+	}
+
+	zipPath := filepath.Join(UpgradeTmpDir, info.FileName)
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		return &StagedPackageInfo{Exists: false}, nil
+	}
+
+	return &StagedPackageInfo{
+		Exists:   true,
+		FileName: info.FileName,
+		Checksum: info.Checksum,
+		OSName:   info.OSName,
+		Version:  info.Version,
+		Size:     st.Size(),
+	}, nil
+}
+
+// UpdateSystemFromLocal starts an update using a locally-uploaded (staged) OTA zip.
+// The OTA zip is expected to be present in UpgradeTmpDir and referenced by the checksum
+// manifest at UpgradeFilesDir/ChecksumFileName.
+func (m *UpgradeManager) UpdateSystemFromLocal() error {
+	if m.IsUpgrading() {
+		return fmt.Errorf("upgrade in progress")
+	}
+
+	// Ensure a staged package exists before we kick off the upgrade.
+	info, err := m.GetStagedLocalPackageInfo()
+	if err != nil {
+		return err
+	}
+	if info == nil || !info.Exists {
+		return fmt.Errorf("no staged OTA package")
+	}
+
+	// Clear state files
+	os.Remove(UpgradeCancelFile)
+	os.Remove(UpgradeDoneFile)
+	os.Remove(UpgradeProgFile)
+
+	m.cancelled = false
+
+	go m.performLocalUpgrade()
+	return nil
+}
+
+// performLocalUpgrade performs an upgrade from a locally-uploaded OTA zip.
+func (m *UpgradeManager) performLocalUpgrade() {
+	m.mu.Lock()
+	m.downloading = false
+	m.upgrading = true
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.downloading = false
+		m.upgrading = false
+		m.mu.Unlock()
+	}()
+
+	// Upgrade phase only (skip download)
+	m.updateProgress(0, "upgrade: preparing")
+	if err := m.performOTAUpgradeWithPlan(localOTAProgressPlan()); err != nil {
+		logger.Error("Local upgrade failed: %v", err)
+		if err.Error() == "cancelled" || m.cancelled {
+			return
+		}
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
+		return
+	}
+
+	// Mark done, then reboot.
+	os.WriteFile(UpgradeDoneFile, []byte("1"), 0644)
+	m.updateProgress(100, "upgrade: rebooting")
+	m.scheduleReboot()
 }
 
 // IsUpgrading checks if an upgrade is in progress.
@@ -197,6 +303,15 @@ func (m *UpgradeManager) Clean() {
 
 // GetSystemUpdateVersion checks for available updates.
 func (m *UpgradeManager) GetSystemUpdateVersion() (*UpdateVersion, error) {
+	return m.GetSystemUpdateVersionWithOptions(false)
+}
+
+// GetSystemUpdateVersionWithOptions checks for updates, optionally forcing a refresh.
+//
+// When force is true, a background query is triggered even if cached version.json exists.
+// The returned payload may still include the cached version, but status will be "querying"
+// while the refresh is in progress.
+func (m *UpgradeManager) GetSystemUpdateVersionWithOptions(force bool) (*UpdateVersion, error) {
 	result := &UpdateVersion{Status: UpdateStatusQuerying}
 
 	if m.IsUpgrading() {
@@ -208,24 +323,73 @@ func (m *UpgradeManager) GetSystemUpdateVersion() (*UpdateVersion, error) {
 	versionFile := filepath.Join(UpgradeFilesDir, "version.json")
 	if data, err := os.ReadFile(versionFile); err == nil {
 		var cached UpdateVersion
-		if json.Unmarshal(data, &cached) == nil && cached.OSName != "" {
-			result.Status = UpdateStatusAvailable
-			result.OSName = cached.OSName
-			result.OSVersion = cached.OSVersion
-			return result, nil
+		if json.Unmarshal(data, &cached) == nil {
+			if cached.CheckedAt == 0 {
+				if st, statErr := os.Stat(versionFile); statErr == nil {
+					cached.CheckedAt = st.ModTime().Unix()
+				}
+			}
+
+			// If we have *any* meaningful cached state (version OR prior error), return it.
+			if cached.OSName != "" || cached.OSVersion != "" || cached.Error != "" || cached.CheckedAt != 0 {
+				if force {
+					m.startQueryLatestVersion()
+					cached.Status = UpdateStatusQuerying
+					return &cached, nil
+				}
+				// Normal cached response.
+				if cached.Status == 0 {
+					cached.Status = UpdateStatusAvailable
+				}
+				return &cached, nil
+			}
 		}
 	}
 
 	// Start background query if not running
-	go m.QueryLatestVersion()
+	_ = m.startQueryLatestVersion()
 
 	return result, nil
 }
 
+// startQueryLatestVersion triggers a background update-check if one is not already running.
+func (m *UpgradeManager) startQueryLatestVersion() bool {
+	m.mu.RLock()
+	already := m.querying
+	m.mu.RUnlock()
+	if already {
+		return false
+	}
+
+	// Reset check progress for the new run.
+	_ = os.Remove(UpdateCheckProgFile)
+	m.updateCheckProgress(0, "checking: starting")
+
+	go func() {
+		_ = m.QueryLatestVersion()
+	}()
+	return true
+}
+
 // QueryLatestVersion queries for the latest version in background.
 func (m *UpgradeManager) QueryLatestVersion() error {
+	// Single-flight guard. (QueryLatestVersion may be called by cron and by the UI.)
+	m.mu.Lock()
+	if m.querying {
+		m.mu.Unlock()
+		return nil
+	}
+	m.querying = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.querying = false
+		m.mu.Unlock()
+	}()
+
 	channel, customURL := m.GetChannel()
 	logger.Info("QueryLatestVersion: channel=%d, customURL=%s", channel, customURL)
+	m.updateCheckProgress(5, "checking: preparing")
 
 	var checksumURL string
 	if customURL != "" {
@@ -233,9 +397,12 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 		logger.Info("Using custom URL: %s", checksumURL)
 	} else {
 		// Parse GitHub releases URL
+		m.updateCheckProgress(10, "checking: resolving latest release")
 		url, err := m.parseGitHubReleasesURL(OfficialURL)
 		if err != nil {
 			logger.Error("Failed to parse GitHub URL: %v", err)
+			m.saveVersionError(err)
+			m.updateCheckProgress(100, "failed: "+truncateStatusError(err))
 			return err
 		}
 		checksumURL = url
@@ -245,16 +412,22 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 	// Download Checksum file
 	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
 	logger.Info("Downloading checksum from %s to %s", checksumURL, checksumPath)
-	if err := m.downloadFile(checksumURL, checksumPath); err != nil {
+	m.updateCheckProgress(15, "checking: downloading checksum")
+	if err := m.downloadFileWithProgress(checksumURL, checksumPath, 15, 70); err != nil {
 		logger.Error("Failed to download checksum file: %v", err)
+		m.saveVersionError(err)
+		m.updateCheckProgress(100, "failed: "+truncateStatusError(err))
 		return err
 	}
 	logger.Info("Successfully downloaded checksum file")
+	m.updateCheckProgress(75, "checking: parsing checksum")
 
 	// Parse version info
 	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
 		logger.Error("Failed to parse version info: %v", err)
+		m.saveVersionError(err)
+		m.updateCheckProgress(100, "failed: "+truncateStatusError(err))
 		return err
 	}
 	logger.Info("Parsed version info: OS=%s, Version=%s, File=%s", info.OSName, info.Version, info.FileName)
@@ -264,8 +437,11 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 	versionData := UpdateVersion{
 		OSName:    info.OSName,
 		OSVersion: info.Version,
+		CheckedAt: time.Now().Unix(),
 		Status:    UpdateStatusAvailable,
+		Error:     "",
 	}
+	m.updateCheckProgress(90, "checking: saving version")
 	data, _ := json.Marshal(versionData)
 	os.WriteFile(versionFile, data, 0644)
 	logger.Info("Saved version info to %s", versionFile)
@@ -275,19 +451,14 @@ func (m *UpgradeManager) QueryLatestVersion() error {
 	os.WriteFile(filepath.Join(UpgradeFilesDir, URLFileName), []byte(baseURL), 0644)
 	logger.Info("Saved base URL: %s", baseURL)
 
+	m.updateCheckProgress(100, "checking: done")
+
 	return nil
 }
 
 // parseGitHubReleasesURL parses GitHub releases URL to get Checksum file URL.
 func (m *UpgradeManager) parseGitHubReleasesURL(url string) (string, error) {
-	client := &http.Client{
-		Timeout: 60 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := client.Get(url)
+	resp, err := m.getWithTLSFallback(url, true)
 	if err != nil {
 		return "", err
 	}
@@ -355,6 +526,19 @@ func (m *UpgradeManager) GetUpdateProgress() (*UpdateProgress, error) {
 	return &progress, nil
 }
 
+// GetUpdateCheckProgress returns the progress/status for "check for updates".
+func (m *UpgradeManager) GetUpdateCheckProgress() (*UpdateProgress, error) {
+	data, err := os.ReadFile(UpdateCheckProgFile)
+	if err != nil || len(data) == 0 {
+		return &UpdateProgress{Progress: 0, Status: "idle"}, nil
+	}
+	var progress UpdateProgress
+	if err := json.Unmarshal(data, &progress); err != nil {
+		return &UpdateProgress{Progress: 0, Status: "idle"}, nil
+	}
+	return &progress, nil
+}
+
 // UpdateSystem initiates a system update.
 func (m *UpgradeManager) UpdateSystem() error {
 	// Clear state files
@@ -367,6 +551,28 @@ func (m *UpgradeManager) UpdateSystem() error {
 	// Start download and upgrade in background
 	go m.performUpgrade()
 
+	return nil
+}
+
+// UpdateSystemSync performs a system update synchronously.
+//
+// This is intended for scheduled/cron execution paths where the process must
+// remain alive for the upgrade to complete. (If we started the upgrade in a
+// goroutine and then exited, the upgrade would be killed immediately.)
+func (m *UpgradeManager) UpdateSystemSync() error {
+	if m.IsUpgrading() {
+		return fmt.Errorf("upgrade in progress")
+	}
+
+	// Clear state files
+	os.Remove(UpgradeCancelFile)
+	os.Remove(UpgradeDoneFile)
+	os.Remove(UpgradeProgFile)
+
+	m.cancelled = false
+
+	// Run the upgrade in-process (blocks until finished or until the device reboots).
+	m.performUpgrade()
 	return nil
 }
 
@@ -387,7 +593,10 @@ func (m *UpgradeManager) performUpgrade() {
 	m.updateProgress(0, "download")
 	if err := m.downloadOTA(); err != nil {
 		logger.Error("Download failed: %v", err)
-		m.updateProgress(0, "failed")
+		if err.Error() == "cancelled" || m.cancelled {
+			return
+		}
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
 		return
 	}
 
@@ -402,15 +611,20 @@ func (m *UpgradeManager) performUpgrade() {
 	m.mu.Unlock()
 
 	// Upgrade phase
-	m.updateProgress(50, "upgrade")
-	if err := m.performOTAUpgrade(); err != nil {
+	m.updateProgress(50, "upgrade: preparing")
+	if err := m.performOTAUpgradeWithPlan(defaultOTAProgressPlan()); err != nil {
 		logger.Error("Upgrade failed: %v", err)
-		m.updateProgress(50, "failed")
+		if err.Error() == "cancelled" || m.cancelled {
+			return
+		}
+		m.updateProgress(50, "failed: "+truncateStatusError(err))
 		return
 	}
 
-	m.updateProgress(100, "upgrade")
+	// Mark done, then reboot.
 	os.WriteFile(UpgradeDoneFile, []byte("1"), 0644)
+	m.updateProgress(100, "upgrade: rebooting")
+	m.scheduleReboot()
 }
 
 // downloadOTA downloads the OTA package.
@@ -441,7 +655,7 @@ func (m *UpgradeManager) downloadOTA() error {
 	// This avoids "no space left" errors on small recovery partitions
 	tmpPath := filepath.Join(UpgradeTmpDir, info.FileName)
 	logger.Info("Downloading OTA package to %s", tmpPath)
-	if err := m.downloadFileWithProgress(downloadURL, tmpPath, 0, 50); err != nil {
+	if err := m.downloadFile(downloadURL, tmpPath); err != nil {
 		return err
 	}
 
@@ -456,8 +670,51 @@ func (m *UpgradeManager) downloadOTA() error {
 	return nil
 }
 
+type otaProgressPlan struct {
+	FIPStart     int
+	FIPEnd       int
+	BootStart    int
+	BootEnd      int
+	RootfsStart  int
+	RootfsEnd    int
+	SwitchProg   int
+	FinalizeProg int
+}
+
+func defaultOTAProgressPlan() otaProgressPlan {
+	return otaProgressPlan{
+		FIPStart:     55,
+		FIPEnd:       60,
+		BootStart:    60,
+		BootEnd:      65,
+		RootfsStart:  65,
+		RootfsEnd:    95,
+		SwitchProg:   95,
+		FinalizeProg: 98,
+	}
+}
+
+// local (staged) OTA updates skip the download phase; start the visible progress at 0%.
+func localOTAProgressPlan() otaProgressPlan {
+	return otaProgressPlan{
+		FIPStart:     5,
+		FIPEnd:       10,
+		BootStart:    10,
+		BootEnd:      20,
+		RootfsStart:  20,
+		RootfsEnd:    90,
+		SwitchProg:   90,
+		FinalizeProg: 95,
+	}
+}
+
 // performOTAUpgrade writes the OTA update to partitions.
 func (m *UpgradeManager) performOTAUpgrade() error {
+	return m.performOTAUpgradeWithPlan(defaultOTAProgressPlan())
+}
+
+// performOTAUpgradeWithPlan writes the OTA update to partitions using a caller-supplied progress plan.
+func (m *UpgradeManager) performOTAUpgradeWithPlan(plan otaProgressPlan) error {
 	// Get version info to find the OTA file
 	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
 	info, err := m.parseVersionInfo(checksumPath)
@@ -487,14 +744,14 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 	}
 
 	// Update FIP partition
-	m.updateProgress(55, "upgrade")
-	if err := m.updatePartition(zipReader, FIPPart, "fip.bin", checksumMap, true); err != nil {
+	m.updateProgress(plan.FIPStart, "upgrade: writing fip")
+	if err := m.updatePartition(zipReader, FIPPart, "fip.bin", checksumMap, true, plan.FIPStart, plan.FIPEnd, "upgrade: writing fip"); err != nil {
 		logger.Warning("FIP update skipped: %v", err)
 	}
 
 	// Update boot partition
-	m.updateProgress(60, "upgrade")
-	if err := m.updatePartition(zipReader, BootPart, "boot.emmc", checksumMap, false); err != nil {
+	m.updateProgress(plan.BootStart, "upgrade: writing boot")
+	if err := m.updatePartition(zipReader, BootPart, "boot.emmc", checksumMap, false, plan.BootStart, plan.BootEnd, "upgrade: writing boot"); err != nil {
 		logger.Warning("Boot update skipped: %v", err)
 	}
 
@@ -505,16 +762,17 @@ func (m *UpgradeManager) performOTAUpgrade() error {
 	}
 
 	// Update rootfs
-	m.updateProgress(65, "upgrade")
-	if err := m.updatePartition(zipReader, targetRootFS, "rootfs_ext4.emmc", checksumMap, false); err != nil {
+	m.updateProgress(plan.RootfsStart, "upgrade: writing rootfs")
+	if err := m.updatePartition(zipReader, targetRootFS, "rootfs_ext4.emmc", checksumMap, false, plan.RootfsStart, plan.RootfsEnd, "upgrade: writing rootfs"); err != nil {
 		return fmt.Errorf("rootfs update failed: %v", err)
 	}
 
 	// Switch boot partition
-	m.updateProgress(95, "upgrade")
+	m.updateProgress(plan.SwitchProg, "upgrade: switching slot")
 	if err := m.switchPartition(); err != nil {
 		return err
 	}
+	m.updateProgress(plan.FinalizeProg, "upgrade: finalizing")
 
 	// Clean up OTA file after successful upgrade
 	logger.Info("Cleaning up OTA file: %s", zipPath)
@@ -617,8 +875,131 @@ func (m *UpgradeManager) readZipChecksum(zipReader *zip.ReadCloser) (map[string]
 	return checksumMap, nil
 }
 
-// updatePartition updates a partition from the zip file.
-func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, filename string, checksumMap map[string]string, isFIP bool) error {
+// downloadFile downloads a file from a URL to a destination path.
+func (m *UpgradeManager) downloadFile(url, destPath string) error {
+	logger.Info("Downloading file from %s", url)
+	resp, err := m.getWithTLSFallback(url, false)
+	if err != nil {
+		logger.Error("HTTP GET failed for %s: %v", url, err)
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("HTTP error for %s: status=%d", url, resp.StatusCode)
+		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+	out, err := os.Create(destPath)
+	if err != nil {
+		logger.Error("Failed to create file %s: %v", destPath, err)
+		return err
+	}
+	defer out.Close()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		logger.Error("Failed to write file %s: %v", destPath, err)
+		return err
+	}
+
+	logger.Info("Successfully downloaded %d bytes to %s", written, destPath)
+	return nil
+}
+
+// verifyChecksum verifies the SHA256 checksum of a file.
+func (m *UpgradeManager) verifyChecksum(filePath, expectedChecksum string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return err
+	}
+
+	actualChecksum := hex.EncodeToString(hash.Sum(nil))
+	if actualChecksum != expectedChecksum {
+		return fmt.Errorf("Checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
+	}
+	return nil
+}
+
+// formatMiB formats bytes as mebibytes.
+func formatMiB(b int64) string {
+	return fmt.Sprintf("%.1fMiB", float64(b)/1024.0/1024.0)
+}
+
+// downloadFileWithProgress downloads a file with progress tracking.
+func (m *UpgradeManager) downloadFileWithProgress(url, destPath string, progressStart, progressEnd int) error {
+	resp, err := m.getWithTLSFallback(url, false)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+
+	totalSize := resp.ContentLength
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	var downloaded int64
+	buf := make([]byte, 32*1024)
+	lastUpdate := time.Now()
+	for {
+		if m.cancelled {
+			return fmt.Errorf("cancelled")
+		}
+
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			downloaded += int64(n)
+
+			if totalSize > 0 {
+				pct := progressStart + int(float64(downloaded)/float64(totalSize)*float64(progressEnd-progressStart))
+				// Rate-limit status updates to keep the progress file writes reasonable.
+				if time.Since(lastUpdate) > 250*time.Millisecond {
+					m.updateCheckProgress(pct, fmt.Sprintf("checking: download %s/%s", formatMiB(downloaded), formatMiB(totalSize)))
+					lastUpdate = time.Now()
+				}
+			} else if time.Since(lastUpdate) > 500*time.Millisecond {
+				m.updateCheckProgress(progressStart, fmt.Sprintf("checking: download %s", formatMiB(downloaded)))
+				lastUpdate = time.Now()
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	// Ensure we end at the top of the download range.
+	m.updateCheckProgress(progressEnd, "checking: download done")
+	return nil
+}
+
+// updatePartition updates a partition from the zip file with progress tracking.
+func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, filename string, checksumMap map[string]string, isFIP bool, progressStart, progressEnd int, status string) error {
 	// Find file in zip
 	var zipFile *zip.File
 	for _, f := range zipReader.File {
@@ -660,10 +1041,36 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 	hash := sha256.New()
 	writer := io.MultiWriter(part, hash)
 
-	// Copy data
-	written, err := io.Copy(writer, rc)
-	if err != nil {
-		return err
+	total := int64(zipFile.UncompressedSize64)
+	var written int64
+	buf := make([]byte, 256*1024)
+	lastUpdate := time.Now()
+	for {
+		if m.cancelled {
+			return fmt.Errorf("cancelled")
+		}
+
+		n, rerr := rc.Read(buf)
+		if n > 0 {
+			if _, werr := writer.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			written += int64(n)
+
+			if total > 0 {
+				pct := progressStart + int(float64(written)/float64(total)*float64(progressEnd-progressStart))
+				if time.Since(lastUpdate) > 250*time.Millisecond {
+					m.updateProgress(pct, fmt.Sprintf("%s %s/%s", status, formatMiB(written), formatMiB(total)))
+					lastUpdate = time.Now()
+				}
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
 	}
 
 	// Verify Checksum
@@ -672,115 +1079,61 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 		return fmt.Errorf("Checksum mismatch for %s: expected %s, got %s", filename, expectedChecksum, actualChecksum)
 	}
 
+	// Ensure we end at the top of this step's range.
+	m.updateProgress(progressEnd, fmt.Sprintf("%s done", status))
+
 	logger.Info("Updated %s with %s (%d bytes)", partition, filename, written)
 	return nil
 }
 
-// downloadFile downloads a file from URL.
-func (m *UpgradeManager) downloadFile(url, destPath string) error {
-	logger.Info("Downloading file from %s", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		logger.Error("HTTP GET failed for %s: %v", url, err)
-		return err
+// saveVersionError persists the last check error into version.json while preserving any
+// previously cached osName/osVersion (if present).
+func (m *UpgradeManager) saveVersionError(err error) {
+	versionFile := filepath.Join(UpgradeFilesDir, "version.json")
+	var cached UpdateVersion
+	if data, rerr := os.ReadFile(versionFile); rerr == nil {
+		_ = json.Unmarshal(data, &cached)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Error("HTTP error for %s: status=%d", url, resp.StatusCode)
-		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	cached.CheckedAt = time.Now().Unix()
+	if cached.Status == 0 {
+		cached.Status = UpdateStatusAvailable
 	}
-
-	logger.Info("Creating destination file: %s", destPath)
-	out, err := os.Create(destPath)
-	if err != nil {
-		logger.Error("Failed to create file %s: %v", destPath, err)
-		return err
-	}
-	defer out.Close()
-
-	written, err := io.Copy(out, resp.Body)
-	if err != nil {
-		logger.Error("Failed to write file %s: %v", destPath, err)
-		return err
-	}
-
-	logger.Info("Successfully downloaded %d bytes to %s", written, destPath)
-	return nil
+	cached.Error = truncateStatusError(err)
+	data, _ := json.Marshal(cached)
+	_ = os.WriteFile(versionFile, data, 0644)
 }
 
-// downloadFileWithProgress downloads a file with progress tracking.
-func (m *UpgradeManager) downloadFileWithProgress(url, destPath string, progressStart, progressEnd int) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
+func truncateStatusError(err error) string {
+	if err == nil {
+		return "unknown error"
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	s := strings.TrimSpace(err.Error())
+	// Avoid writing huge error strings to the progress file.
+	const max = 160
+	if len(s) > max {
+		s = s[:max] + "…"
 	}
-
-	totalSize := resp.ContentLength
-	out, err := os.Create(destPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	var downloaded int64
-	buf := make([]byte, 32*1024)
-	for {
-		if m.cancelled {
-			return fmt.Errorf("cancelled")
-		}
-
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-			downloaded += int64(n)
-
-			if totalSize > 0 {
-				pct := progressStart + int(float64(downloaded)/float64(totalSize)*float64(progressEnd-progressStart))
-				m.updateProgress(pct, "download")
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return s
 }
 
-// verifyChecksum verifies the SHA256 checksum of a file.
-func (m *UpgradeManager) verifyChecksum(filePath, expectedChecksum string) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return err
-	}
-
-	actualChecksum := hex.EncodeToString(hash.Sum(nil))
-	if actualChecksum != expectedChecksum {
-		return fmt.Errorf("Checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
-	}
-
-	return nil
+func (m *UpgradeManager) scheduleReboot() {
+	go func() {
+		// Small delay to ensure the progress file write is flushed.
+		time.Sleep(2 * time.Second)
+		_ = exec.Command("reboot").Run()
+	}()
 }
 
 // updateProgress updates the progress file.
 func (m *UpgradeManager) updateProgress(progress int, status string) {
 	data, _ := json.Marshal(UpdateProgress{Progress: progress, Status: status})
 	os.WriteFile(UpgradeProgFile, data, 0644)
+}
+
+// updateCheckProgress updates the update-check progress file.
+func (m *UpgradeManager) updateCheckProgress(progress int, status string) {
+	data, _ := json.Marshal(UpdateProgress{Progress: progress, Status: status})
+	_ = os.WriteFile(UpdateCheckProgFile, data, 0644)
 }
 
 // CancelUpdate cancels an ongoing update.
@@ -812,4 +1165,73 @@ func copyFile(src, dst string) error {
 // Recovery sets the factory reset flag.
 func (m *UpgradeManager) Recovery() error {
 	return exec.Command("fw_setenv", "factory_reset", "1").Run()
+}
+
+func isTLSUnknownAuthority(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Usually wrapped in *url.Error.
+	var ua x509.UnknownAuthorityError
+	if errors.As(err, &ua) {
+		return true
+	}
+	return strings.Contains(err.Error(), "x509: certificate signed by unknown authority")
+}
+
+func isTrustedFallbackHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	// Allow fallback only for GitHub hosts used by official releases.
+	if host == "github.com" || strings.HasSuffix(host, ".github.com") {
+		return true
+	}
+	if strings.HasSuffix(host, "githubusercontent.com") {
+		return true
+	}
+	return false
+}
+
+func newHTTPClient(timeout time.Duration, noRedirect bool, insecureTLS bool) *http.Client {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	var transport http.RoundTripper
+	if ok {
+		cloned := tr.Clone()
+		if insecureTLS {
+			cloned.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+		transport = cloned
+	} else {
+		transport = http.DefaultTransport
+	}
+	client := &http.Client{Timeout: timeout, Transport: transport}
+	if noRedirect {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	return client
+}
+
+// getWithTLSFallback performs an HTTP GET with normal TLS verification first.
+// If the device lacks a CA bundle (common on minimal images), and the host is a
+// known GitHub host, retry once with TLS verification disabled.
+func (m *UpgradeManager) getWithTLSFallback(rawURL string, noRedirect bool) (*http.Response, error) {
+	client := newHTTPClient(60*time.Second, noRedirect, false)
+	resp, err := client.Get(rawURL)
+	if err == nil {
+		return resp, nil
+	}
+	if isTrustedFallbackHost(rawURL) && isTLSUnknownAuthority(err) {
+		logger.Warning("TLS verification failed for %s; retrying with InsecureSkipVerify (install ca-certificates to avoid this)", rawURL)
+		insecureClient := newHTTPClient(60*time.Second, noRedirect, true)
+		return insecureClient.Get(rawURL)
+	}
+	return nil, err
 }

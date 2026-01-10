@@ -78,17 +78,24 @@ func (h *LEDHandler) GetLEDs(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := os.ReadDir(h.ledBasePath)
 	if err != nil {
-		api.WriteSuccess(w, map[string]interface{}{"leds": leds})
+		logger.Error("Failed to read LED directory %s: %v", h.ledBasePath, err)
+		api.WriteError(w, -1, "Failed to read LED directory")
 		return
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
 		name := entry.Name()
 		ledPath := filepath.Join(h.ledBasePath, name)
+
+		// In sysfs, entries under /sys/class/leds are often symlinks.
+		// DirEntry.IsDir() does NOT follow symlinks, so we must stat the path.
+		fi, err := os.Stat(ledPath)
+		if err != nil {
+			continue
+		}
+		if !fi.IsDir() {
+			continue
+		}
 
 		info := LEDInfo{Name: name}
 

@@ -41,8 +41,15 @@ const createSupervisorRequest = () => {
     const { catchs } = otherConfig;
 
     return await new Promise((resolve, reject) => {
+      console.log("supervisorRequest: Making request with config:", config);
       supervisorService.request<BaseResponse<T>>(config).then(
         (res) => {
+          console.log("supervisorRequest: Axios response received:", res);
+          console.log("supervisorRequest: res.status:", res.status);
+          console.log("supervisorRequest: res.data:", res.data);
+          console.log("supervisorRequest: res.data.code:", res.data?.code);
+          console.log("supervisorRequest: res.data.data:", res.data?.data);
+          
           if (catchs) {
             resolve(res.data);
           } else {
@@ -55,10 +62,18 @@ const createSupervisorRequest = () => {
           }
         },
         (err: AxiosError) => {
-          console.error(err);
+          console.error("supervisorRequest: Axios error:", err);
+          console.error("supervisorRequest: err.response:", err.response);
+          console.error("supervisorRequest: err.response?.data:", err.response?.data);
+          
           // Authentication failed, re-login
           if (err.response?.status == 401) {
             clearCurrentUser();
+            // Force redirect to login by resetting hash
+            if (window.location.hash !== '#/') {
+              window.location.hash = '#/';
+            }
+            message.error("Session expired. Please log in again.");
           } else {
             if (!catchs) {
               message.error(err.message || "request error");

@@ -56,6 +56,7 @@ interface IInitialState {
   etherStatus: NetworkStatus;
   connectLoading: boolean;
   refreshLoading: boolean;
+  initialLoading: boolean;
 }
 type ActionType = { type: "setState"; payload: Partial<IInitialState> };
 const initialState: IInitialState = {
@@ -78,6 +79,7 @@ const initialState: IInitialState = {
   etherStatus: NetworkStatus.Disconnected,
   connectLoading: false,
   refreshLoading: false,
+  initialLoading: true,
 };
 function reducer(state: IInitialState, action: ActionType): IInitialState {
   switch (action.type) {
@@ -184,6 +186,7 @@ export function useData() {
     } catch (err) {}
     setStates({
       needRefresh: false,
+      initialLoading: false,
     });
   };
 

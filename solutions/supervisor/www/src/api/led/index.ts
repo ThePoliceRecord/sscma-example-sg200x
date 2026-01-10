@@ -9,11 +9,17 @@ export interface LEDInfo {
 }
 
 // Get all LEDs
-export const getLEDsApi = async () =>
-  supervisorRequest<{ leds: LEDInfo[] }>({
+export const getLEDsApi = async () => {
+  console.log("getLEDsApi: Making request to api/ledMgr/getLEDs");
+  const result = await supervisorRequest<{ leds: LEDInfo[] }>({
     url: "api/ledMgr/getLEDs",
     method: "get",
   });
+  console.log("getLEDsApi: supervisorRequest returned:", result);
+  console.log("getLEDsApi: result.data:", result?.data);
+  console.log("getLEDsApi: result.data?.leds:", (result?.data as any)?.leds);
+  return result;
+};
 
 // Get specific LED
 export const getLEDApi = async (name: string) =>

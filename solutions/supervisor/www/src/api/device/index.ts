@@ -77,6 +77,7 @@ export const updateSystemApi = async () =>
 export const getUpdateSystemProgressApi = async () =>
   supervisorRequest<{
     progress: number;
+    status?: string;
   }>({
     url: "api/deviceMgr/getUpdateProgress",
     method: "get",
@@ -88,15 +89,61 @@ export const cancelUpdateApi = async () =>
     method: "post",
   });
 
+// Custom OTA package upload (staged local update)
+export interface UploadedUpdatePackageInfo {
+  exists: boolean;
+  fileName?: string;
+  checksum?: string;
+  osName?: string;
+  version?: string;
+  size?: number;
+}
+
+export const uploadUpdatePackageApi = async (data: FormData, onProgress?: (percent: number) => void) =>
+  supervisorRequest<{
+    fileName: string;
+    checksum: string;
+    size: number;
+    osName: string;
+    version: string;
+  }>({
+    url: "api/deviceMgr/uploadUpdatePackage",
+    method: "post",
+    data,
+    onUploadProgress: (evt) => {
+      if (!onProgress) return;
+      const total = evt.total ?? 0;
+      const loaded = evt.loaded ?? 0;
+      if (total > 0) {
+        onProgress(Math.min(100, Math.max(0, Math.round((loaded / total) * 100))));
+      }
+    },
+  });
+
+export const getUploadedUpdatePackageApi = async () =>
+  supervisorRequest<UploadedUpdatePackageInfo>({
+    url: "api/deviceMgr/getUploadedUpdatePackage",
+    method: "get",
+  });
+
+export const applyUploadedUpdatePackageApi = async () =>
+  supervisorRequest<{ status: string }>({
+    url: "api/deviceMgr/applyUploadedUpdatePackage",
+    method: "post",
+  });
+
 // 获取设备更新版本信息
 export const getSystemUpdateVesionInfoApi = async (data: {
   url: string;
   channel?: DeviceChannleMode;
+  force?: boolean;
 }) =>
   supervisorRequest<{
     osName: string;
     osVersion: string;
     status: SystemUpdateStatus;
+    checkedAt?: number;
+    error?: string;
   }>(
     {
       url: "api/deviceMgr/getSystemUpdateVersion",
@@ -107,6 +154,30 @@ export const getSystemUpdateVesionInfoApi = async (data: {
       catchs: true,
     }
   );
+
+// Lightweight variant used by the Updates page; backend ignores body fields.
+export const getSystemUpdateVersionApi = async (force = false) =>
+  supervisorRequest<{
+    osName: string;
+    osVersion: string;
+    status: SystemUpdateStatus;
+    checkedAt?: number;
+    error?: string;
+  }>({
+    url: "api/deviceMgr/getSystemUpdateVersion",
+    method: "post",
+    data: { force },
+  });
+
+// Update-check progress (used to show feedback while checking for updates)
+export const getUpdateCheckProgressApi = async () =>
+  supervisorRequest<{
+    progress: number;
+    status?: string;
+  }>({
+    url: "api/deviceMgr/getUpdateCheckProgress",
+    method: "get",
+  });
 
 // 获取模型信息
 export const getModelInfoApi = async () =>
@@ -205,7 +276,7 @@ export interface UpdateConfig {
   model_source: "tpr_official" | "self_hosted";
   self_hosted_os_url: string;
   self_hosted_model_url: string;
-  check_frequency: "30min" | "daily" | "weekly" | "manual";
+  check_frequency: "1min" | "30min" | "daily" | "weekly" | "manual";
   weekly_day: "sunday" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday";
 }
 

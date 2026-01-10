@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Button, Form, Switch, Input, Modal, Empty, message } from "antd";
+import { Button, Form, Switch, Input, Modal, Empty, message, Spin } from "antd";
 import { LoadingOutlined, InfoCircleOutlined, ReloadOutlined, WifiOutlined, GlobalOutlined, EditOutlined, SaveOutlined } from "@ant-design/icons";
 import WarnImg from "@/assets/images/warn.png";
 import LockImg from "@/assets/images/svg/lock.svg";
@@ -25,6 +25,28 @@ import { requiredTrimValidate } from "@/utils/validate";
 // Maximum visible WiFi networks before scrolling
 const MAX_VISIBLE_WIFI_NETWORKS = 3;
 const WIFI_ITEM_HEIGHT = 64; // Approximate height of each WiFi item in pixels
+
+// Loading spinner style with explicit animation
+const spinnerStyle = {
+  fontSize: 48, 
+  color: '#9be564',
+  animation: 'spin 1s linear infinite',
+};
+
+// Smaller spinner for inline loading
+const smallSpinnerStyle = {
+  fontSize: 32, 
+  color: '#9be564',
+  animation: 'spin 1s linear infinite',
+};
+
+// Keyframes for spinner animation (injected via style tag)
+const spinKeyframes = `
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+`;
 
 const wifiImg: {
   [prop: number]: string;
@@ -131,6 +153,13 @@ function Network() {
 
   return (
     <div className="p-16">
+      <style>{spinKeyframes}</style>
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
       {contextHolder}
       {/* Page Header */}
       <div className="mb-24">
@@ -224,7 +253,18 @@ function Network() {
       <div className="mb-24">
         <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">Ethernet</div>
         <div className="p-20" style={translucentCardStyle}>
-          {state.etherInfo ? (
+          {state.initialLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center">
+                <div style={smallSpinnerStyle}>
+                  <LoadingOutlined />
+                </div>
+                <div className="mt-12 text-14 text-platinum/50" style={{ animation: 'pulse 2s ease-in-out infinite' }}>
+                  Checking ethernet...
+                </div>
+              </div>
+            </div>
+          ) : state.etherInfo ? (
             <div
               className="flex justify-between items-center cursor-pointer"
               onClick={onClickEthernetItem}
@@ -375,7 +415,16 @@ function Network() {
                   overflowY: state.wifiInfoList.length > MAX_VISIBLE_WIFI_NETWORKS ? 'auto' : 'visible',
                 }}
               >
-                {state.wifiInfoList.length > 0 ? (
+                {state.initialLoading || state.refreshLoading ? (
+                  <div className="py-24 flex flex-col items-center justify-center">
+                    <div style={smallSpinnerStyle}>
+                      <LoadingOutlined />
+                    </div>
+                    <div className="mt-12 text-14 text-platinum/50" style={{ animation: 'pulse 2s ease-in-out infinite' }}>
+                      Scanning for networks...
+                    </div>
+                  </div>
+                ) : state.wifiInfoList.length > 0 ? (
                   state.wifiInfoList.map((wifiItem, index) => (
                     <div
                       className={`flex justify-between items-center py-12 cursor-pointer hover:bg-white/5 -mx-8 px-8 rounded-lg transition-colors ${index > 0 ? 'border-t border-white/10 mt-2 pt-14' : ''}`}
@@ -418,7 +467,7 @@ function Network() {
                     <Empty 
                       description={
                         <span className="text-platinum/50">
-                          {state.refreshLoading ? 'Scanning for networks...' : 'No networks found'}
+                          No networks found
                         </span>
                       }
                       image={Empty.PRESENTED_IMAGE_SIMPLE}

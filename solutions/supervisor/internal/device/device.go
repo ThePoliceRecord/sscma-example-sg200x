@@ -127,10 +127,10 @@ func QueryDeviceInfo() *DeviceInfo {
 		SN:         system.GetSerialNumber(),
 		Type:       deviceType,
 
-		// Hardware specs
-		CPU: "SG2002",
-		RAM: "256MB",
-		NPU: "1 TOPS",
+		// Hardware specs - get from actual system
+		CPU: system.GetCPUModel(),
+		RAM: system.GetRAMSize(),
+		NPU: system.GetNPUInfo(),
 
 		// OS info
 		OSName:    system.GetOSName(),
@@ -210,10 +210,21 @@ func GetAPIDevice() *APIDeviceInfo {
 		rollback = 1
 	}
 
+	// Get actual hardware specs
+	cpuModel := system.GetCPUModel()
+	ramSize := system.GetRAMSize()
+	npuInfo := system.GetNPUInfo()
+
+	// Extract numeric values for API (needed by some endpoints)
+	// RAM: extract number from "256MB" -> "256"
+	ramNumeric := strings.TrimSuffix(strings.TrimSuffix(ramSize, "MB"), "GB")
+	// NPU: extract number from "1 TOPS" -> "1"
+	npuNumeric := strings.Fields(npuInfo)[0]
+
 	return &APIDeviceInfo{
-		CPU:          "sg2002",
-		RAM:          "256",
-		NPU:          "1",
+		CPU:          cpuModel,
+		RAM:          ramNumeric,
+		NPU:          npuNumeric,
 		WS:           "8000",
 		TTYD:         "9090",
 		EMMC:         system.GetEMMCSize(),

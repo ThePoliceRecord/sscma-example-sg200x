@@ -8,10 +8,8 @@ type UserInfo = {
 };
 
 type UserStoreType = {
-  firstLogin: boolean;
   usersBySn: Record<string, UserInfo>;
   currentSn: string | null;
-  updateFirstLogin: (firstLogin: boolean) => void;
   updateUserInfo: (userInfo: UserInfo) => void;
   setCurrentSn: (sn: string) => void;
   updateUserName: (userName: string | null) => void;
@@ -23,10 +21,8 @@ type UserStoreType = {
 const useUserStore = create<UserStoreType>()(
   persist(
     (set, get) => ({
-      firstLogin: false,
       usersBySn: {},
       currentSn: null,
-      updateFirstLogin: (firstLogin: boolean) => set(() => ({ firstLogin })),
       updateUserInfo: (userInfo: UserInfo) => {
         const { currentSn, usersBySn } = get();
         if (currentSn) {

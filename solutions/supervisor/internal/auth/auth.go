@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -230,10 +231,25 @@ func CheckPasswordHash(password, hash string) bool {
 }
 
 // GetUsername retrieves the current system username (default recamera).
+// For handlers, use GetUsernameFromRequest instead.
 func GetUsername() string {
 	// Check environment first
 	if user := os.Getenv("SUPERVISOR_USER"); user != "" {
 		return user
 	}
 	return "recamera"
+}
+
+// GetUsernameFromRequest retrieves the username from the request context.
+// The auth middleware sets this in the X-Username header after validating the JWT token.
+func GetUsernameFromRequest(r *http.Request) string {
+	// Try to get username from the header set by auth middleware
+	if r != nil {
+		if username := r.Header.Get("X-Username"); username != "" {
+			return username
+		}
+	}
+
+	// Fallback to default
+	return GetUsername()
 }

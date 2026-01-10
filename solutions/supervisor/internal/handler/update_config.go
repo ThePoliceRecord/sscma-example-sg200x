@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"supervisor/internal/api"
 	"supervisor/internal/upgrade"
@@ -309,7 +312,9 @@ func applyUpdateCheckSchedule(cfg *UpdateConfig) error {
 		return err
 	}
 
-	ensureCronRunning(cronDir)
+	if err := ensureCronRunning(cronDir); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -379,41 +384,115 @@ func removeManagedCronBlock(s string) string {
 // detectCronTab chooses a root crontab location compatible with common embedded distros.
 // Returns (cronDir, crontabFilePath).
 func detectCronTab() (string, string, error) {
-	candidates := []string{
-		"/etc/cron/crontabs",       // buildroot busybox default when CONFIG_FEATURE_CROND_DIR="/etc/cron"
-		"/etc/crontabs",            // common busybox location
-		"/var/spool/cron/crontabs", // dcron/vixie style
-		"/var/spool/cron",          // fallback
-	}
-	for _, dir := range candidates {
-		if st, err := os.Stat(dir); err == nil && st.IsDir() {
-			return dir, filepath.Join(dir, "root"), nil
+	// Buildroot + BusyBox commonly set CONFIG_FEATURE_CROND_DIR="/etc/cron" and store per-user
+	// crontabs under /etc/cron/crontabs/<user>.
+	if st, err := os.Stat("/etc/cron"); err == nil && st.IsDir() {
+		crontabsDir := "/etc/cron/crontabs"
+		if err := os.MkdirAll(crontabsDir, 0755); err != nil {
+			return "", "", err
 		}
+		return "/etc/cron", filepath.Join(crontabsDir, "root"), nil
 	}
 
-	// If nothing exists yet, create the buildroot-friendly directory.
-	fallbackDir := "/etc/cron/crontabs"
-	if err := os.MkdirAll(fallbackDir, 0755); err != nil {
+	// Some systems use /etc/cron/crontabs directly as the cron dir.
+	if st, err := os.Stat("/etc/cron/crontabs"); err == nil && st.IsDir() {
+		return "/etc/cron/crontabs", "/etc/cron/crontabs/root", nil
+	}
+
+	// OpenWrt-style BusyBox layout.
+	if st, err := os.Stat("/etc/crontabs"); err == nil && st.IsDir() {
+		return "/etc/crontabs", "/etc/crontabs/root", nil
+	}
+
+	// dcron/vixie-style layouts.
+	if st, err := os.Stat("/var/spool/cron/crontabs"); err == nil && st.IsDir() {
+		return "/var/spool/cron", "/var/spool/cron/crontabs/root", nil
+	}
+	if st, err := os.Stat("/var/spool/cron"); err == nil && st.IsDir() {
+		return "/var/spool/cron", filepath.Join("/var/spool/cron", "root"), nil
+	}
+
+	// Fallback: create the buildroot-friendly layout.
+	fallbackBase := "/etc/cron"
+	fallbackCrontabs := "/etc/cron/crontabs"
+	if err := os.MkdirAll(fallbackCrontabs, 0755); err != nil {
 		return "", "", err
 	}
-	return fallbackDir, filepath.Join(fallbackDir, "root"), nil
+	return fallbackBase, filepath.Join(fallbackCrontabs, "root"), nil
 }
 
-func ensureCronRunning(cronDir string) {
+func ensureCronRunning(cronDir string) error {
 	// If crond is already running, we're done.
-	if err := exec.Command("pidof", "crond").Run(); err == nil {
-		return
+	if isCrondRunning() {
+		return nil
 	}
 
 	// Prefer init scripts when present.
 	initCandidates := []string{"/etc/init.d/S50crond", "/etc/init.d/P02crond", "/etc/init.d/S90dcron"}
 	for _, script := range initCandidates {
 		if _, err := os.Stat(script); err == nil {
-			_ = exec.Command(script, "start").Run()
-			return
+			if runErr := exec.Command(script, "start").Run(); runErr != nil {
+				logger.Warning("Failed to start cron via %s: %v", script, runErr)
+			}
+			if isCrondRunning() {
+				return nil
+			}
+			break
 		}
 	}
 
 	// Best-effort direct start.
-	_ = exec.Command("crond", "-c", cronDir, "-L", "/dev/null").Start()
+	//
+	// Important: do NOT rely on daemonizing behavior here, because starting a forking daemon
+	// via exec.Command().Start() without Wait() can leak zombies. We start with -f and detach
+	// with setsid so the process stays running without needing an init script.
+	cronDirsToTry := []string{cronDir}
+	if filepath.Base(cronDir) == "crontabs" {
+		cronDirsToTry = append(cronDirsToTry, filepath.Dir(cronDir))
+	}
+
+	for _, dir := range cronDirsToTry {
+		cmd := exec.Command("crond", "-f", "-c", dir, "-L", "/dev/null")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			logger.Warning("Failed to start crond directly (dir=%s): %v", dir, err)
+			continue
+		}
+		_ = cmd.Process.Release()
+
+		// Give the daemon a moment to initialize.
+		time.Sleep(200 * time.Millisecond)
+		if isCrondRunning() {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("cron daemon (crond) is not running and could not be started")
+}
+
+func isCrondRunning() bool {
+	// Fast path: pidof is common on embedded images (busybox applet).
+	if err := exec.Command("pidof", "crond").Run(); err == nil {
+		return true
+	}
+
+	// Fallback: check pidfiles used by common init scripts.
+	pidFiles := []string{"/var/run/crond.pid", "/var/run/dcron.pid"}
+	for _, pf := range pidFiles {
+		b, err := os.ReadFile(pf)
+		if err != nil {
+			continue
+		}
+		pidStr := strings.TrimSpace(string(b))
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid <= 1 {
+			continue
+		}
+		// kill(pid, 0) checks for existence without sending a signal.
+		if err := syscall.Kill(pid, 0); err == nil || err == syscall.EPERM {
+			return true
+		}
+	}
+
+	return false
 }

@@ -23,7 +23,7 @@ import { SystemUpdateStatus } from "@/enum";
 type UpdateSource = "tpr_official" | "self_hosted";
 
 // Update check frequency options
-type UpdateFrequency = "1min" | "30min" | "daily" | "weekly" | "manual";
+type UpdateFrequency = "30min" | "daily" | "weekly" | "manual";
 
 // Day of week for weekly updates
 type DayOfWeek = "sunday" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday";
@@ -102,7 +102,6 @@ const dayOptions = [
 ];
 
 const frequencyOptions = [
-  { value: "1min", label: "Every 1 minute (testing)" },
   { value: "30min", label: "Every 30 minutes" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
@@ -284,12 +283,15 @@ function Updates() {
       setLoading(true);
       try {
         const response = await getUpdateConfigApi();
+        // Hide legacy/testing 1-minute option from UI; if encountered, coerce to a supported value.
+        const coercedFrequency: UpdateFrequency =
+          response.data.check_frequency === "1min" ? "30min" : (response.data.check_frequency as UpdateFrequency);
         const nextConfig: UpdateConfig = {
           osSource: response.data.os_source,
           modelSource: response.data.model_source,
           selfHostedOSUrl: response.data.self_hosted_os_url,
           selfHostedModelUrl: response.data.self_hosted_model_url,
-          checkFrequency: response.data.check_frequency,
+          checkFrequency: coercedFrequency,
           weeklyDay: response.data.weekly_day,
         };
         setConfig(nextConfig);
@@ -960,7 +962,6 @@ function Updates() {
               {config.checkFrequency === "manual" 
                 ? "Updates will only be checked when you manually click 'Check for Updates'"
                 : `Updates will be automatically checked ${
-                    config.checkFrequency === "1min" ? "every 1 minute" :
                     config.checkFrequency === "30min" ? "every 30 minutes" :
                     config.checkFrequency === "daily" ? "once per day" :
                     `every ${dayOptions.find(d => d.value === config.weeklyDay)?.label}`

@@ -653,13 +653,15 @@ func (m *UpgradeManager) downloadOTA() error {
 
 	// Download to /userdata/.upgrade directory (not recovery partition)
 	// This avoids "no space left" errors on small recovery partitions
+	// Show real progress on the Updates page (download phase is 0-45%).
 	tmpPath := filepath.Join(UpgradeTmpDir, info.FileName)
 	logger.Info("Downloading OTA package to %s", tmpPath)
-	if err := m.downloadFile(downloadURL, tmpPath); err != nil {
+	if err := m.downloadFileWithUpgradeProgress(downloadURL, tmpPath, 0, 45); err != nil {
 		return err
 	}
 
 	// Verify Checksum
+	m.updateProgress(45, "download: verifying")
 	logger.Info("Verifying checksum of downloaded file")
 	if err := m.verifyChecksum(tmpPath, info.Checksum); err != nil {
 		os.Remove(tmpPath)
@@ -667,6 +669,70 @@ func (m *UpgradeManager) downloadOTA() error {
 	}
 
 	logger.Info("OTA package downloaded and verified successfully")
+	return nil
+}
+
+// downloadFileWithUpgradeProgress downloads a file while updating the OTA progress file
+// (used by the Updates page to show download progress).
+func (m *UpgradeManager) downloadFileWithUpgradeProgress(url, destPath string, progressStart, progressEnd int) error {
+	resp, err := m.getWithTLSFallback(url, false)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+
+	totalSize := resp.ContentLength
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	m.updateProgress(progressStart, "download: starting")
+
+	var downloaded int64
+	buf := make([]byte, 32*1024)
+	lastUpdate := time.Now()
+	for {
+		if m.cancelled {
+			return fmt.Errorf("cancelled")
+		}
+
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			downloaded += int64(n)
+
+			// Rate-limit status updates to keep the progress file writes reasonable.
+			if time.Since(lastUpdate) > 250*time.Millisecond {
+				if totalSize > 0 {
+					pct := progressStart + int(float64(downloaded)/float64(totalSize)*float64(progressEnd-progressStart))
+					m.updateProgress(pct, fmt.Sprintf("download: %s/%s", formatMiB(downloaded), formatMiB(totalSize)))
+				} else {
+					m.updateProgress(progressStart, fmt.Sprintf("download: %s", formatMiB(downloaded)))
+				}
+				lastUpdate = time.Now()
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+
+	m.updateProgress(progressEnd, "download: done")
 	return nil
 }
 
@@ -1117,11 +1183,30 @@ func truncateStatusError(err error) string {
 }
 
 func (m *UpgradeManager) scheduleReboot() {
-	go func() {
-		// Small delay to ensure the progress file write is flushed.
-		time.Sleep(2 * time.Second)
-		_ = exec.Command("reboot").Run()
-	}()
+	// NOTE: this function is intentionally synchronous.
+	//
+	// UpdateSystemSync() is used by scheduled/cron paths and exits the process after the update.
+	// If reboot were triggered in a goroutine, the process could exit before reboot executes.
+	// Keeping this synchronous ensures reboot is attempted before returning.
+	//
+	// Small delay to ensure the progress file write is flushed.
+	time.Sleep(2 * time.Second)
+	_ = exec.Command("sync").Run()
+
+	candidates := []string{
+		"/sbin/reboot",
+		"/bin/reboot",
+		"reboot",
+	}
+	for _, c := range candidates {
+		if err := exec.Command(c).Run(); err == nil {
+			return
+		}
+	}
+
+	// If we get here, reboot failed; leave the done marker so the UI can show it needs restart.
+	m.updateProgress(100, "upgrade: reboot failed (manual reboot required)")
+	logger.Error("Failed to reboot after upgrade; manual reboot required")
 }
 
 // updateProgress updates the progress file.

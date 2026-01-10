@@ -9,7 +9,7 @@ import { requiredTrimValidate, passwordRules } from "@/utils/validate";
 import { loginApi, updateUserPasswordApi } from "@/api/user";
 
 const Login = () => {
-  const { firstLogin, updateFirstLogin, updateUserInfo } = useUserStore();
+  const { updateUserInfo } = useUserStore();
 
   const [form] = Form.useForm();
   const [messageApi, messageContextHolder] = message.useMessage();
@@ -37,7 +37,6 @@ const Login = () => {
 
       if (response.code == 0) {
         messageApi.success("Password changed successfully");
-        updateFirstLogin(false);
         form.resetFields();
       } else {
         messageApi.error(response.msg || "Password change failed");
@@ -225,7 +224,7 @@ const Login = () => {
         title={
           <span className="text-18 font-semibold text-white">Change Password</span>
         }
-        open={firstLogin}
+        open={false}
         closable={false}
         footer={
           <Button

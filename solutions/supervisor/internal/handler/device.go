@@ -2,9 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +29,12 @@ type DeviceHandler struct {
 	deviceInfo  *device.APIDeviceInfo
 	upgradeMgr  *upgrade.UpgradeManager
 }
+
+const (
+	// maxOTAUploadSize limits the maximum accepted OTA zip upload size.
+	// OTA zips contain a full rootfs image and can be large.
+	maxOTAUploadSize int64 = 2 << 30 // 2GiB
+)
 
 // NewDeviceHandler creates a new DeviceHandler.
 func NewDeviceHandler() *DeviceHandler {
@@ -334,6 +343,162 @@ func (h *DeviceHandler) UploadModel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UploadUpdatePackage handles OTA zip uploads to stage a custom OS update.
+// The uploaded file must be an "*_ota.zip" (ends with "ota.zip").
+func (h *DeviceHandler) UploadUpdatePackage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	if h.upgradeMgr.IsUpgrading() {
+		api.WriteError(w, -1, "Update already in progress")
+		return
+	}
+
+	// Enforce an upper bound on upload size.
+	r.Body = http.MaxBytesReader(w, r.Body, maxOTAUploadSize)
+
+	// IMPORTANT: do not call r.ParseMultipartForm() for OTA packages.
+	// ParseMultipartForm spills large uploads to os.TempDir() (typically /tmp), which is often too small
+	// for multi-hundred-MB or multi-GB OTA zips and results in "Failed to parse form".
+	// Instead, stream the multipart part directly into UpgradeTmpDir.
+	reader, err := r.MultipartReader()
+	if err != nil {
+		logger.Error("UploadUpdatePackage: failed to create multipart reader: %v", err)
+		api.WriteError(w, -1, "Invalid multipart upload")
+		return
+	}
+
+	var part *multipart.Part
+	for {
+		p, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			logger.Error("UploadUpdatePackage: failed to read multipart data: %v", err)
+			api.WriteError(w, -1, "Failed to read upload")
+			return
+		}
+		if p.FormName() == "file" {
+			part = p
+			break
+		}
+		_ = p.Close()
+	}
+	if part == nil {
+		api.WriteError(w, -1, "File required")
+		return
+	}
+	defer part.Close()
+
+	filename := filepath.Base(part.FileName())
+	// Require the standard naming so the upgrader can parse version metadata.
+	if !(strings.HasSuffix(filename, "ota.zip") && strings.HasSuffix(filename, ".zip")) {
+		api.WriteError(w, -1, "Invalid update package type. Expected an *_ota.zip")
+		return
+	}
+
+	// Ensure staging directories exist.
+	if err := os.MkdirAll(upgrade.UpgradeTmpDir, 0755); err != nil {
+		logger.Error("Failed to create upgrade tmp dir: %v", err)
+		api.WriteError(w, -1, "Failed to stage update package")
+		return
+	}
+	if err := os.MkdirAll(upgrade.UpgradeFilesDir, 0755); err != nil {
+		logger.Error("Failed to create upgrade files dir: %v", err)
+		api.WriteError(w, -1, "Failed to stage update package")
+		return
+	}
+
+	// Write upload to a temp file first, then atomically rename.
+	tmpDst, err := os.CreateTemp(upgrade.UpgradeTmpDir, "upload-*.partial")
+	if err != nil {
+		logger.Error("Failed to create temp OTA file: %v", err)
+		api.WriteError(w, -1, "Failed to stage update package")
+		return
+	}
+	tmpPath := tmpDst.Name()
+
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(tmpDst, hash), part)
+	closeErr := tmpDst.Close()
+	if copyErr != nil || closeErr != nil {
+		logger.Error("Failed to save OTA file: copyErr=%v closeErr=%v", copyErr, closeErr)
+		os.Remove(tmpPath)
+		api.WriteError(w, -1, "Failed to save update package")
+		return
+	}
+
+	checksum := hex.EncodeToString(hash.Sum(nil))
+
+	finalPath := filepath.Join(upgrade.UpgradeTmpDir, filename)
+	// Remove any previously staged OTA with the same name.
+	_ = os.Remove(finalPath)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		logger.Error("Failed to finalize OTA file: %v", err)
+		os.Remove(tmpPath)
+		api.WriteError(w, -1, "Failed to stage update package")
+		return
+	}
+
+	// Write manifest file used by the upgrader.
+	manifestLine := fmt.Sprintf("%s  %s\n", checksum, filename)
+	manifestPath := filepath.Join(upgrade.UpgradeFilesDir, upgrade.ChecksumFileName)
+	if err := os.WriteFile(manifestPath, []byte(manifestLine), 0644); err != nil {
+		logger.Error("Failed to write OTA manifest: %v", err)
+		api.WriteError(w, -1, "Failed to stage update package")
+		return
+	}
+
+	// Also write version.json so existing update flows can surface the staged update.
+	osName := ""
+	version := ""
+	parts := strings.Split(filename, "_")
+	if len(parts) >= 3 {
+		osName = parts[1]
+		version = parts[2]
+	}
+	versionFile := filepath.Join(upgrade.UpgradeFilesDir, "version.json")
+	if data, err := json.Marshal(upgrade.UpdateVersion{OSName: osName, OSVersion: version, Status: upgrade.UpdateStatusAvailable}); err == nil {
+		_ = os.WriteFile(versionFile, data, 0644)
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{
+		"fileName": filename,
+		"checksum": checksum,
+		"size":     written,
+		"osName":   osName,
+		"version":  version,
+	})
+}
+
+// GetUploadedUpdatePackage returns information about a staged OTA package.
+func (h *DeviceHandler) GetUploadedUpdatePackage(w http.ResponseWriter, r *http.Request) {
+	info, err := h.upgradeMgr.GetStagedLocalPackageInfo()
+	if err != nil {
+		api.WriteError(w, -1, "Failed to read staged update package")
+		return
+	}
+	api.WriteSuccess(w, info)
+}
+
+// ApplyUploadedUpdatePackage starts an upgrade using the currently staged OTA package.
+func (h *DeviceHandler) ApplyUploadedUpdatePackage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	if err := h.upgradeMgr.UpdateSystemFromLocal(); err != nil {
+		api.WriteError(w, -1, err.Error())
+		return
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{"status": "updating"})
+}
+
 // Timestamp APIs
 
 // SetTimestampRequest represents a timestamp set request.
@@ -538,9 +703,34 @@ func (h *DeviceHandler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 
 // GetSystemUpdateVersion returns available update version.
 func (h *DeviceHandler) GetSystemUpdateVersion(w http.ResponseWriter, r *http.Request) {
-	result, err := h.upgradeMgr.GetSystemUpdateVersion()
+	// Allow the caller to force a refresh even if version.json is cached.
+	force := false
+	if r.Method == http.MethodPost {
+		var req struct {
+			Force bool `json:"force"`
+		}
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&req); err == nil {
+			force = req.Force
+		} else if err != io.EOF {
+			// Non-fatal: ignore malformed/empty body and fall back to cached behavior.
+			logger.Warning("GetSystemUpdateVersion: failed to decode request body: %v", err)
+		}
+	}
+
+	result, err := h.upgradeMgr.GetSystemUpdateVersionWithOptions(force)
 	if err != nil {
 		api.WriteError(w, -1, "Failed to get update version")
+		return
+	}
+	api.WriteSuccess(w, result)
+}
+
+// GetUpdateCheckProgress returns progress/status for the "check for updates" operation.
+func (h *DeviceHandler) GetUpdateCheckProgress(w http.ResponseWriter, r *http.Request) {
+	result, err := h.upgradeMgr.GetUpdateCheckProgress()
+	if err != nil {
+		api.WriteSuccess(w, map[string]interface{}{"progress": 0, "status": "idle"})
 		return
 	}
 	api.WriteSuccess(w, result)

@@ -1,14 +1,29 @@
-import { useState, useEffect } from "react";
-import { Radio, Select, Button, Input, message, Spin } from "antd";
-import { CloudDownloadOutlined, SyncOutlined, CheckCircleOutlined, LinkOutlined } from "@ant-design/icons";
+import { useState, useEffect, useRef } from "react";
+import { Radio, Select, Button, Input, message, Spin, Progress, Modal } from "antd";
+import { CloudDownloadOutlined, SyncOutlined, CheckCircleOutlined, LinkOutlined, UploadOutlined, CloseCircleOutlined } from "@ant-design/icons";
 import type { RadioChangeEvent } from "antd";
-import { getUpdateConfigApi, setUpdateConfigApi, UpdateConfig as APIUpdateConfig, updateSystemApi } from "@/api/device";
+import { 
+  queryDeviceInfoApi,
+  getUpdateConfigApi,
+  setUpdateConfigApi, 
+  UpdateConfig as APIUpdateConfig,
+  updateSystemApi, 
+  uploadUpdatePackageApi, 
+  getUploadedUpdatePackageApi,
+  applyUploadedUpdatePackageApi,
+  getUpdateSystemProgressApi,
+  cancelUpdateApi,
+  getSystemUpdateVersionApi,
+  getUpdateCheckProgressApi,
+  type UploadedUpdatePackageInfo,
+} from "@/api/device";
+import { SystemUpdateStatus } from "@/enum";
 
 // Update source options
 type UpdateSource = "tpr_official" | "self_hosted";
 
 // Update check frequency options
-type UpdateFrequency = "30min" | "daily" | "weekly" | "manual";
+type UpdateFrequency = "1min" | "30min" | "daily" | "weekly" | "manual";
 
 // Day of week for weekly updates
 type DayOfWeek = "sunday" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday";
@@ -29,6 +44,10 @@ interface UpdateInfo {
   latestVersion: string;
   hasUpdate: boolean;
   lastChecked: string;
+  // Raw versions for comparison/decision-making.
+  currentVersionRaw?: string;
+  latestVersionRaw?: string;
+  isDowngrade?: boolean;
 }
 
 // Translucent card style (matching TPR.css .translucent-card-grey-1)
@@ -36,6 +55,40 @@ const translucentCardStyle = {
   backgroundColor: 'rgba(31, 31, 27, 0.85)',
   boxShadow: '2px 2px 4px 4px rgba(3, 68, 255, 0.4), -2px -2px 4px 4px rgba(3, 68, 255, 0.2)',
   borderRadius: '12px',
+};
+
+// Best-effort version parsing + comparison (handles "v1.2.3", "1.2.3-rc1", etc.).
+const parseVersionParts = (v?: string): number[] => {
+  if (!v) return [];
+  const s = v.trim().replace(/^v\s*/i, "");
+  // Split on dots and dashes; take the first number from each segment.
+  const segs = s.split(/[.\-]/g);
+  const out: number[] = [];
+  for (const seg of segs) {
+    const m = seg.match(/\d+/);
+    if (!m) {
+      out.push(0);
+      continue;
+    }
+    const n = Number.parseInt(m[0], 10);
+    out.push(Number.isFinite(n) ? n : 0);
+  }
+  // Trim trailing zeros to avoid false “downgrade” comparisons like 1.2 == 1.2.0
+  while (out.length > 0 && out[out.length - 1] === 0) out.pop();
+  return out;
+};
+
+const compareVersions = (a?: string, b?: string): number => {
+  const ap = parseVersionParts(a);
+  const bp = parseVersionParts(b);
+  const n = Math.max(ap.length, bp.length);
+  for (let i = 0; i < n; i++) {
+    const ai = ap[i] ?? 0;
+    const bi = bp[i] ?? 0;
+    if (ai > bi) return 1;
+    if (ai < bi) return -1;
+  }
+  return 0;
 };
 
 const dayOptions = [
@@ -49,6 +102,7 @@ const dayOptions = [
 ];
 
 const frequencyOptions = [
+  { value: "1min", label: "Every 1 minute (testing)" },
   { value: "30min", label: "Every 30 minutes" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
@@ -58,7 +112,34 @@ const frequencyOptions = [
 function Updates() {
   const [messageApi, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(false);
-  
+
+  const progressTimerRef = useRef<number | null>(null);
+  const progressPollStartedAtRef = useRef<number | null>(null);
+  const progressSeenActiveRef = useRef<boolean>(false);
+  const progressIdleCountRef = useRef<number>(0);
+  const osCheckTimerRef = useRef<number | null>(null);
+  const [selectedPackage, setSelectedPackage] = useState<File | null>(null);
+  const [uploadingPackage, setUploadingPackage] = useState(false);
+  const [uploadProgressPct, setUploadProgressPct] = useState<number>(0);
+  const [stagedPackage, setStagedPackage] = useState<UploadedUpdatePackageInfo | null>(null);
+  const [applyingStagedPackage, setApplyingStagedPackage] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{ progress: number; status?: string }>({
+    progress: 0,
+    status: "idle",
+  });
+  // Treat any non-idle/non-cancelled/non-failed status as an active install.
+  // (Backend uses statuses like "download", "upgrade: ...", "failed: ...", "idle", "cancelled".)
+  const isSystemUpdateRunning = (() => {
+    const st = (updateProgress.status || "idle").toLowerCase();
+    if (!st || st === "idle" || st === "cancelled") return false;
+    if (st.startsWith("failed")) return false;
+    return true;
+  })();
+  const [osCheckProgress, setOsCheckProgress] = useState<{ progress: number; status?: string }>({
+    progress: 0,
+    status: "idle",
+  });
+
   const [config, setConfig] = useState<UpdateConfig>({
     osSource: "tpr_official",
     modelSource: "tpr_official",
@@ -68,20 +149,171 @@ function Updates() {
     weeklyDay: "sunday",
   });
 
+  const [osUpdateInfo, setOsUpdateInfo] = useState<UpdateInfo>({
+    currentVersion: "(unknown)",
+    latestVersion: "(unknown)",
+    hasUpdate: false,
+    lastChecked: "Never",
+    currentVersionRaw: "",
+    latestVersionRaw: "",
+    isDowngrade: false,
+  });
+
+  const [modelUpdateInfo] = useState<UpdateInfo>({
+    currentVersion: "(n/a)",
+    latestVersion: "(n/a)",
+    hasUpdate: false,
+    lastChecked: "Not implemented",
+    currentVersionRaw: "",
+    latestVersionRaw: "",
+    isDowngrade: false,
+  });
+
+  const formatAge = (unixSeconds?: number) => {
+    if (!unixSeconds) return "Never";
+    const diffMs = Date.now() - unixSeconds * 1000;
+    if (diffMs < 0) return "Just now";
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    const days = Math.floor(hours / 24);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  };
+
+  const stopOSCheckProgressPolling = () => {
+    if (osCheckTimerRef.current != null) {
+      window.clearInterval(osCheckTimerRef.current);
+      osCheckTimerRef.current = null;
+    }
+  };
+
+  const startOSCheckProgressPolling = () => {
+    if (osCheckTimerRef.current != null) return;
+    // Fetch immediately so the UI shows feedback even before the first tick.
+    (async () => {
+      try {
+        const p = await getUpdateCheckProgressApi();
+        setOsCheckProgress({ progress: p.data.progress, status: p.data.status });
+      } catch {
+        // Ignore
+      }
+    })();
+    osCheckTimerRef.current = window.setInterval(async () => {
+      try {
+        const p = await getUpdateCheckProgressApi();
+        setOsCheckProgress({ progress: p.data.progress, status: p.data.status });
+        const st = (p.data.status || "").toLowerCase();
+        if ((p.data.progress ?? 0) >= 100 || st.startsWith("failed") || st.includes("done")) {
+          stopOSCheckProgressPolling();
+        }
+      } catch {
+        stopOSCheckProgressPolling();
+      }
+    }, 500);
+  };
+
+  const refreshOSUpdateInfo = async (forceCheck: boolean, effectiveConfig?: UpdateConfig) => {
+    const cfg = effectiveConfig ?? config;
+
+    // Ensure self-hosted URL is set if selected.
+    if (cfg.osSource === "self_hosted" && !cfg.selfHostedOSUrl.trim()) {
+      messageApi.error("Please enter a self-hosted server URL");
+      return;
+    }
+
+    setCheckingOS(true);
+    if (forceCheck) {
+      startOSCheckProgressPolling();
+    }
+    try {
+      const dev = await queryDeviceInfoApi();
+      const currentOSName = dev.data.osName || "";
+      const currentOSVersion = dev.data.osVersion || "(unknown)";
+
+      // Ask supervisor for latest version info. This may return "Checking" initially.
+      let latest = await getSystemUpdateVersionApi(forceCheck);
+      if (forceCheck && latest.data.status === SystemUpdateStatus.Checking) {
+        // Poll a few times while the backend fetches version.json.
+        for (let i = 0; i < 8; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          // Subsequent polls should NOT re-force; just read the latest status.
+          latest = await getSystemUpdateVersionApi(false);
+          if (latest.data.status !== SystemUpdateStatus.Checking) break;
+        }
+      }
+
+      const latestOSName = latest.data.osName || currentOSName;
+      const latestOSVersion = latest.data.osVersion || currentOSVersion;
+      const checkError = latest.data.error;
+
+      const cmp = compareVersions(latestOSVersion, currentOSVersion);
+      const isDowngrade = !checkError && latest.data.status === SystemUpdateStatus.Normal && cmp < 0;
+      const hasUpdate =
+        !checkError &&
+        latest.data.status === SystemUpdateStatus.Normal &&
+        (!!latest.data.osVersion && latestOSVersion !== currentOSVersion);
+
+      setOsUpdateInfo({
+        currentVersion: currentOSName ? `${currentOSName} ${currentOSVersion}` : currentOSVersion,
+        latestVersion: latestOSName ? `${latestOSName} ${latestOSVersion}` : latestOSVersion,
+        hasUpdate,
+        currentVersionRaw: currentOSVersion,
+        latestVersionRaw: latestOSVersion,
+        isDowngrade,
+        lastChecked:
+          latest.data.status === SystemUpdateStatus.Checking
+            ? "Checking…"
+            : checkError
+              ? `Failed: ${checkError}`
+              : formatAge(latest.data.checkedAt),
+      });
+    } catch (err) {
+      console.error("Failed to refresh OS update info:", err);
+      messageApi.error("Failed to check OS updates");
+    } finally {
+      setCheckingOS(false);
+      stopOSCheckProgressPolling();
+    }
+  };
+
   // Load configuration on mount
   useEffect(() => {
     const loadConfig = async () => {
       setLoading(true);
       try {
         const response = await getUpdateConfigApi();
-        setConfig({
+        const nextConfig: UpdateConfig = {
           osSource: response.data.os_source,
           modelSource: response.data.model_source,
           selfHostedOSUrl: response.data.self_hosted_os_url,
           selfHostedModelUrl: response.data.self_hosted_model_url,
           checkFrequency: response.data.check_frequency,
           weeklyDay: response.data.weekly_day,
-        });
+        };
+        setConfig(nextConfig);
+
+        // Load real OS version + latest version cache.
+        // (The backend may still be querying; the UI will show “Checking…”.)
+        await refreshOSUpdateInfo(false, nextConfig);
+
+        try {
+          const staged = await getUploadedUpdatePackageApi();
+          setStagedPackage(staged.data);
+        } catch {
+          // Non-fatal
+        }
+
+        try {
+          const prog = await getUpdateSystemProgressApi();
+          setUpdateProgress({ progress: prog.data.progress, status: prog.data.status });
+          if ((prog.data.status && prog.data.status !== "idle") || prog.data.progress > 0) {
+            startProgressPolling();
+          }
+        } catch {
+          // Non-fatal
+        }
       } catch (error) {
         console.error("Failed to load update configuration:", error);
         messageApi.error("Failed to load update configuration");
@@ -90,7 +322,87 @@ function Updates() {
       }
     };
     loadConfig();
+
+    return () => {
+      stopProgressPolling();
+      stopOSCheckProgressPolling();
+    };
   }, [messageApi]);
+
+  const stopProgressPolling = () => {
+    if (progressTimerRef.current != null) {
+      window.clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    progressPollStartedAtRef.current = null;
+    progressSeenActiveRef.current = false;
+    progressIdleCountRef.current = 0;
+  };
+
+  const startProgressPolling = () => {
+    if (progressTimerRef.current != null) return;
+
+    // Reset per-run polling state.
+    progressPollStartedAtRef.current = Date.now();
+    progressSeenActiveRef.current = false;
+    progressIdleCountRef.current = 0;
+
+    // Fetch immediately so we don't miss the early phase (e.g. 0–20%) before the first 1s tick.
+    (async () => {
+      try {
+        const prog = await getUpdateSystemProgressApi();
+        setUpdateProgress({ progress: prog.data.progress, status: prog.data.status });
+      } catch {
+        // Ignore; interval will handle failures.
+      }
+    })();
+    progressTimerRef.current = window.setInterval(async () => {
+      try {
+        const prog = await getUpdateSystemProgressApi();
+        setUpdateProgress({ progress: prog.data.progress, status: prog.data.status });
+
+        const p = prog.data.progress ?? 0;
+        const stRaw = prog.data.status || "idle";
+        const st = stRaw.toLowerCase();
+
+        // Mark that we've seen an actual running state.
+        if (st !== "idle" && st !== "cancelled") {
+          progressSeenActiveRef.current = true;
+          progressIdleCountRef.current = 0;
+        }
+
+        // Terminal conditions.
+        if (p >= 100 || st === "cancelled" || st.startsWith("failed")) {
+          stopProgressPolling();
+          return;
+        }
+
+        // The backend may briefly report "idle" right after an update is triggered
+        // (before the progress file is written). Don’t stop polling immediately.
+        if (st === "idle") {
+          progressIdleCountRef.current += 1;
+          const startedAt = progressPollStartedAtRef.current ?? Date.now();
+          const ageMs = Date.now() - startedAt;
+
+          // If we've never seen an active status, keep polling for a grace window.
+          if (!progressSeenActiveRef.current) {
+            if (ageMs > 15000) {
+              stopProgressPolling();
+            }
+            return;
+          }
+
+          // If we *have* seen activity, stop after a few consecutive idle polls.
+          if (progressIdleCountRef.current >= 3) {
+            stopProgressPolling();
+          }
+        }
+      } catch {
+        // If polling fails, stop to avoid spamming.
+        stopProgressPolling();
+      }
+    }, 1000);
+  };
 
   // Save configuration helper
   const saveConfig = async (newConfig: UpdateConfig) => {
@@ -109,20 +421,6 @@ function Updates() {
       throw error;
     }
   };
-
-  const [osUpdateInfo] = useState<UpdateInfo>({
-    currentVersion: "1.2.3",
-    latestVersion: "1.2.3",
-    hasUpdate: false,
-    lastChecked: "2 hours ago",
-  });
-
-  const [modelUpdateInfo] = useState<UpdateInfo>({
-    currentVersion: "2.0.1",
-    latestVersion: "2.1.0",
-    hasUpdate: true,
-    lastChecked: "2 hours ago",
-  });
 
   const [checkingOS, setCheckingOS] = useState(false);
   const [checkingModel, setCheckingModel] = useState(false);
@@ -198,15 +496,7 @@ function Updates() {
   };
 
   const handleCheckOSUpdates = async () => {
-    if (config.osSource === "self_hosted" && !config.selfHostedOSUrl.trim()) {
-      messageApi.error("Please enter a self-hosted server URL");
-      return;
-    }
-    setCheckingOS(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setCheckingOS(false);
-    messageApi.info("Camera OS is up to date");
+    await refreshOSUpdateInfo(true);
   };
 
   const handleCheckModelUpdates = async () => {
@@ -222,12 +512,127 @@ function Updates() {
   };
 
   const handleInstallUpdate = async (type: "os" | "model") => {
-    try {
+    if (uploadingPackage || applyingStagedPackage || isSystemUpdateRunning) {
+      messageApi.warning("An update is already in progress. Please wait for it to finish before starting another update.");
+      return;
+    }
+
+    const startInstall = async () => {
       await updateSystemApi();
       messageApi.info(`Installing ${type === "os" ? "Camera OS" : "Camera Model"} update...`);
+
+      // Ensure the UI immediately shows status/progress (self-hosted installs previously looked idle).
+      setUpdateProgress({ progress: 0, status: "download" });
+      startProgressPolling();
+    };
+
+    try {
+      if (type === "os" && osUpdateInfo.isDowngrade && osUpdateInfo.currentVersionRaw && osUpdateInfo.latestVersionRaw) {
+        Modal.confirm({
+          title: "Downgrade Camera OS?",
+          content: `You are about to downgrade from ${osUpdateInfo.currentVersionRaw} to ${osUpdateInfo.latestVersionRaw}. This is not recommended unless you know you need an older version.`,
+          okText: "Downgrade",
+          okButtonProps: { danger: true },
+          cancelText: "Cancel",
+          centered: true,
+          onOk: startInstall,
+        });
+        return;
+      }
+
+      await startInstall();
     } catch (error) {
       console.error("Failed to start update:", error);
       messageApi.error("Failed to start update");
+    }
+  };
+
+  const handleSelectPackageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setSelectedPackage(file);
+  };
+
+  const handleUploadPackage = async () => {
+    if (!selectedPackage) {
+      messageApi.error("Please choose an OTA package file");
+      return;
+    }
+    if (!selectedPackage.name.endsWith("ota.zip")) {
+      messageApi.error("Invalid file: expected an *_ota.zip");
+      return;
+    }
+
+    setUploadingPackage(true);
+    setUploadProgressPct(0);
+    try {
+      const form = new FormData();
+      form.append("file", selectedPackage);
+      const res = await uploadUpdatePackageApi(form, (pct) => setUploadProgressPct(pct));
+      messageApi.success("Update package uploaded and staged");
+
+      // Refresh staged info from server response
+      setStagedPackage({
+        exists: true,
+        fileName: res.data.fileName,
+        checksum: res.data.checksum,
+        osName: res.data.osName,
+        version: res.data.version,
+        size: res.data.size,
+      });
+      setSelectedPackage(null);
+    } catch (error) {
+      console.error("Failed to upload update package:", error);
+      messageApi.error("Failed to upload update package");
+    } finally {
+      setUploadingPackage(false);
+      // Leave the final pct visible briefly when successful.
+      window.setTimeout(() => setUploadProgressPct(0), 1500);
+    }
+  };
+
+  const handleApplyStagedPackage = async () => {
+    if (!stagedPackage?.exists) {
+      messageApi.error("No staged update package found");
+      return;
+    }
+
+    // Avoid starting a staged install while an OTA upload or any other update install is running.
+    if (uploadingPackage || applyingStagedPackage || isSystemUpdateRunning) {
+      messageApi.warning("An update is already in progress. Please wait for it to finish before installing the staged package.");
+      return;
+    }
+
+    Modal.confirm({
+      title: "Install staged update package?",
+      content: "This will install the uploaded Camera OS update package. The device will need to reboot after the update completes.",
+      okText: "Install",
+      cancelText: "Cancel",
+      centered: true,
+      onOk: async () => {
+        setApplyingStagedPackage(true);
+        try {
+          await applyUploadedUpdatePackageApi();
+          messageApi.info("Installing uploaded update package...");
+          startProgressPolling();
+        } catch (error) {
+          console.error("Failed to start staged update:", error);
+          messageApi.error("Failed to start staged update");
+        } finally {
+          setApplyingStagedPackage(false);
+        }
+      },
+    });
+  };
+
+  const handleCancelUpdate = async () => {
+    try {
+      await cancelUpdateApi();
+      messageApi.info("Update cancelled");
+      setUpdateProgress({ progress: 0, status: "cancelled" });
+      stopProgressPolling();
+    } catch (error) {
+      console.error("Failed to cancel update:", error);
+      messageApi.error("Failed to cancel update");
     }
   };
 
@@ -241,7 +646,10 @@ function Updates() {
     onUrlChange: (e: React.ChangeEvent<HTMLInputElement>) => void,
     checking: boolean,
     onCheck: () => void,
-    onInstall: () => void
+    onInstall: () => void,
+    checkProgress?: { progress: number; status?: string },
+    installProgress?: { progress: number; status?: string },
+    onCancelInstall?: () => void
   ) => (
     <div className="p-20" style={translucentCardStyle}>
       <div className="flex justify-between items-start mb-16">
@@ -253,7 +661,7 @@ function Updates() {
         </div>
         {info.hasUpdate ? (
           <div className="px-12 py-4 rounded-full bg-cta/20 text-cta text-12 font-medium">
-            Update Available
+            {info.isDowngrade ? "Downgrade Available" : "Update Available"}
           </div>
         ) : (
           <div className="flex items-center gap-4 text-12 text-platinum/60">
@@ -262,6 +670,14 @@ function Updates() {
           </div>
         )}
       </div>
+
+      {info.isDowngrade && (
+        <div className="mb-16 p-12 rounded-lg" style={{ backgroundColor: 'rgba(255, 77, 79, 0.12)', border: '1px solid rgba(255, 77, 79, 0.35)' }}>
+          <div className="text-12" style={{ color: 'rgba(255, 77, 79, 0.95)' }}>
+            Warning: installing this will downgrade your Camera OS.
+          </div>
+        </div>
+      )}
 
       {/* Version Info */}
       <div className="mb-16 p-12 rounded-lg" style={{ backgroundColor: 'rgba(255, 255, 255, 0.05)' }}>
@@ -323,7 +739,7 @@ function Updates() {
       )}
 
       {/* Action Buttons */}
-      <div className="flex gap-12">
+      <div className="flex gap-12 flex-wrap">
         <Button
           icon={checking ? <Spin size="small" /> : <SyncOutlined />}
           onClick={onCheck}
@@ -338,107 +754,222 @@ function Updates() {
             icon={<CloudDownloadOutlined />}
             onClick={onInstall}
             className="flex-1"
+            disabled={isSystemUpdateRunning}
           >
             Install Update
           </Button>
         )}
+        {onCancelInstall && (
+          <Button
+            icon={<CloseCircleOutlined />}
+            onClick={onCancelInstall}
+            disabled={(installProgress?.status || "idle") === "idle" || (installProgress?.status || "") === "cancelled"}
+            className="flex-1"
+          >
+            Cancel Update
+          </Button>
+        )}
       </div>
+
+      {/* Install progress (OS updates) */}
+      {installProgress?.status && installProgress.status !== "idle" && (
+        <div className="mt-12">
+          <div className="text-12 text-platinum/60 mb-8">
+            Status: <span className="font-mono">{installProgress.status}</span>
+          </div>
+          <Progress percent={Math.min(100, Math.max(0, installProgress.progress || 0))} />
+        </div>
+      )}
+
+      {/* Checking progress */}
+      {checking && (
+        <div className="mt-12">
+          <div className="text-12 text-platinum/60 mb-8">
+            Status: <span className="font-mono">{checkProgress?.status || "checking"}</span>
+          </div>
+          <Progress percent={Math.min(100, Math.max(0, checkProgress?.progress ?? 0))} size="small" />
+        </div>
+      )}
     </div>
   );
 
   return (
     <div className="p-16">
       {contextHolder}
-      
-      {/* Page Header */}
-      <div className="mb-24">
-        <div className="flex items-center gap-12 mb-8">
-          <CloudDownloadOutlined style={{ fontSize: 28, color: '#9be564' }} />
-          <h1 className="text-28 font-bold text-platinum m-0">Updates</h1>
-        </div>
-        <p className="text-14 text-platinum/60 mt-8">
-          Keep your camera software and models up to date
-        </p>
-      </div>
-
-      {/* Camera OS Updates */}
-      <div className="mb-24">
-        <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
-          Camera OS Updates
-        </div>
-        {renderUpdateCard(
-          "Camera OS",
-          osUpdateInfo,
-          config.osSource,
-          config.selfHostedOSUrl,
-          handleOSSourceChange,
-          handleSelfHostedOSUrlChange,
-          checkingOS,
-          handleCheckOSUpdates,
-          () => handleInstallUpdate("os")
-        )}
-      </div>
-
-      {/* Camera Model Updates */}
-      <div className="mb-24">
-        <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
-          Camera Model Updates
-        </div>
-        {renderUpdateCard(
-          "Camera Model",
-          modelUpdateInfo,
-          config.modelSource,
-          config.selfHostedModelUrl,
-          handleModelSourceChange,
-          handleSelfHostedModelUrlChange,
-          checkingModel,
-          handleCheckModelUpdates,
-          () => handleInstallUpdate("model")
-        )}
-      </div>
-
-      {/* Update Check Frequency */}
-      <div className="mb-24">
-        <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
-          Update Check Frequency
-        </div>
-        <div className="p-20" style={translucentCardStyle}>
-          <div className="mb-16">
-            <div className="text-14 font-medium text-platinum mb-8">Check for updates</div>
-            <Select
-              value={config.checkFrequency}
-              onChange={handleFrequencyChange}
-              options={frequencyOptions}
-              className="w-full"
-              style={{ backgroundColor: 'rgba(255, 255, 255, 0.1)' }}
-            />
+      <Spin spinning={loading} tip="Loading…">
+        {/* Page Header */}
+        <div className="mb-24">
+          <div className="flex items-center gap-12 mb-8">
+            <CloudDownloadOutlined style={{ fontSize: 28, color: '#9be564' }} />
+            <h1 className="text-28 font-bold text-platinum m-0">Updates</h1>
           </div>
+          <p className="text-14 text-platinum/60 mt-8">
+            Keep your camera software and models up to date
+          </p>
+        </div>
 
-          {config.checkFrequency === "weekly" && (
-            <div>
-              <div className="text-14 font-medium text-platinum mb-8">Day of week</div>
+        {/* Camera OS Updates */}
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
+            Camera OS Updates
+          </div>
+          {renderUpdateCard(
+            "Camera OS",
+            osUpdateInfo,
+            config.osSource,
+            config.selfHostedOSUrl,
+            handleOSSourceChange,
+            handleSelfHostedOSUrlChange,
+            checkingOS,
+            handleCheckOSUpdates,
+            () => handleInstallUpdate("os"),
+            osCheckProgress,
+            updateProgress,
+            handleCancelUpdate
+          )}
+        </div>
+
+        {/* Custom Update Package */}
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
+            Custom Update Package
+          </div>
+          <div className="p-20" style={translucentCardStyle}>
+            <div className="text-14 font-medium text-platinum mb-8">Upload an OTA package</div>
+            <div className="text-12 text-platinum/60 mb-12">
+              Upload a device OTA zip (must end with <span className="font-mono">*_ota.zip</span>) to install a custom Camera OS update.
+            </div>
+
+            <div className="flex gap-12 items-center flex-wrap">
+              <input
+                type="file"
+                accept=".zip"
+                onChange={handleSelectPackageFile}
+                style={{ color: "rgba(255,255,255,0.7)" }}
+              />
+              <Button
+                icon={<UploadOutlined />}
+                onClick={handleUploadPackage}
+                loading={uploadingPackage}
+                disabled={!selectedPackage || uploadingPackage}
+              >
+                Upload Package
+              </Button>
+            </div>
+
+            {/* Upload progress */}
+            {(uploadingPackage || uploadProgressPct > 0) && (
+              <div className="mt-12">
+                <div className="text-12 text-platinum/60 mb-8">
+                  Uploading: <span className="font-mono">{uploadProgressPct}%</span>
+                </div>
+                <Progress percent={Math.min(100, Math.max(0, uploadProgressPct || 0))} />
+              </div>
+            )}
+
+            {/* Staged info */}
+            <div className="mt-16 p-12 rounded-lg" style={{ backgroundColor: 'rgba(255, 255, 255, 0.05)' }}>
+              <div className="text-14 font-medium text-platinum mb-8">Staged Package</div>
+              {stagedPackage?.exists ? (
+                <div className="space-y-6 text-12 text-platinum/70">
+                  <div className="flex justify-between gap-12">
+                    <span>File</span>
+                    <span className="font-mono truncate">{stagedPackage.fileName}</span>
+                  </div>
+                  <div className="flex justify-between gap-12">
+                    <span>OS</span>
+                    <span className="font-mono">{stagedPackage.osName || "(unknown)"}</span>
+                  </div>
+                  <div className="flex justify-between gap-12">
+                    <span>Version</span>
+                    <span className="font-mono">{stagedPackage.version || "(unknown)"}</span>
+                  </div>
+                  <div className="flex justify-between gap-12">
+                    <span>SHA256</span>
+                    <span className="font-mono truncate">{stagedPackage.checksum}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-12 text-platinum/50">No staged update package</div>
+              )}
+            </div>
+
+            {/* Install staged package */}
+            <div className="mt-16">
+              <Button
+                type="primary"
+                onClick={handleApplyStagedPackage}
+                loading={applyingStagedPackage}
+                disabled={!stagedPackage?.exists || uploadingPackage || isSystemUpdateRunning}
+              >
+                Install Staged Package
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Camera Model Updates */}
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
+            Camera Model Updates
+          </div>
+          {renderUpdateCard(
+            "Camera Model",
+            modelUpdateInfo,
+            config.modelSource,
+            config.selfHostedModelUrl,
+            handleModelSourceChange,
+            handleSelfHostedModelUrlChange,
+            checkingModel,
+            handleCheckModelUpdates,
+            () => handleInstallUpdate("model")
+          )}
+        </div>
+
+        {/* Update Check Frequency */}
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
+            Update Check Frequency
+          </div>
+          <div className="p-20" style={translucentCardStyle}>
+            <div className="mb-16">
+              <div className="text-14 font-medium text-platinum mb-8">Check for updates</div>
               <Select
-                value={config.weeklyDay}
-                onChange={handleWeeklyDayChange}
-                options={dayOptions}
+                value={config.checkFrequency}
+                onChange={handleFrequencyChange}
+                options={frequencyOptions}
                 className="w-full"
                 style={{ backgroundColor: 'rgba(255, 255, 255, 0.1)' }}
               />
             </div>
-          )}
 
-          <div className="mt-12 text-12 text-platinum/50">
-            {config.checkFrequency === "manual" 
-              ? "Updates will only be checked when you manually click 'Check for Updates'"
-              : `Updates will be automatically checked ${
-                  config.checkFrequency === "30min" ? "every 30 minutes" :
-                  config.checkFrequency === "daily" ? "once per day" :
-                  `every ${dayOptions.find(d => d.value === config.weeklyDay)?.label}`
-                }`
-            }
+            {config.checkFrequency === "weekly" && (
+              <div>
+                <div className="text-14 font-medium text-platinum mb-8">Day of week</div>
+                <Select
+                  value={config.weeklyDay}
+                  onChange={handleWeeklyDayChange}
+                  options={dayOptions}
+                  className="w-full"
+                  style={{ backgroundColor: 'rgba(255, 255, 255, 0.1)' }}
+                />
+              </div>
+            )}
+
+            <div className="mt-12 text-12 text-platinum/50">
+              {config.checkFrequency === "manual" 
+                ? "Updates will only be checked when you manually click 'Check for Updates'"
+                : `Updates will be automatically checked ${
+                    config.checkFrequency === "1min" ? "every 1 minute" :
+                    config.checkFrequency === "30min" ? "every 30 minutes" :
+                    config.checkFrequency === "daily" ? "once per day" :
+                    `every ${dayOptions.find(d => d.value === config.weeklyDay)?.label}`
+                  }`
+              }
+            </div>
           </div>
         </div>
-      </div>
+      </Spin>
     </div>
   );
 }

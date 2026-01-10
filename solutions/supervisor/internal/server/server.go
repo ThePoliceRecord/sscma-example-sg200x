@@ -58,6 +58,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to ensure TLS certificates: %w", err)
 	}
 
+	// OTA uploads can be hundreds of MB to multiple GB; 30s is too small and causes connection resets.
+	// Use longer timeouts so the browser can finish uploading over slower links.
+	readTimeout := 10 * time.Minute
+	writeTimeout := 10 * time.Minute
+
 	// Get TLS configuration
 	tlsConfig, err := s.tlsManager.GetTLSConfig()
 	if err != nil {
@@ -96,8 +101,8 @@ func (s *Server) Start() error {
 		s.httpServer = &http.Server{
 			Addr:         ":" + s.cfg.HTTPPort,
 			Handler:      s.httpsRedirectHandler(),
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			ReadTimeout:  readTimeout,
+			WriteTimeout: writeTimeout,
 			IdleTimeout:  120 * time.Second,
 		}
 
@@ -114,8 +119,8 @@ func (s *Server) Start() error {
 		Addr:         ":" + s.cfg.HTTPSPort,
 		Handler:      rootMux,
 		TLSConfig:    tlsConfig,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -211,7 +216,8 @@ func (s *Server) setupRoutes() http.Handler {
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
-		"/api/userMgr/login": true,
+		"/api/userMgr/login":             true,
+		"/api/deviceMgr/queryDeviceInfo": true, // Needed before login to get device SN
 	}
 
 	// Auth middleware
@@ -244,6 +250,9 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/getModelInfo", deviceHandler.GetModelInfo)
 	apiHandler.HandleFunc("/api/deviceMgr/getModelFile", deviceHandler.GetModelFile)
 	apiHandler.HandleFunc("/api/deviceMgr/uploadModel", deviceHandler.UploadModel)
+	apiHandler.HandleFunc("/api/deviceMgr/uploadUpdatePackage", deviceHandler.UploadUpdatePackage)
+	apiHandler.HandleFunc("/api/deviceMgr/getUploadedUpdatePackage", deviceHandler.GetUploadedUpdatePackage)
+	apiHandler.HandleFunc("/api/deviceMgr/applyUploadedUpdatePackage", deviceHandler.ApplyUploadedUpdatePackage)
 	apiHandler.HandleFunc("/api/deviceMgr/setTimestamp", deviceHandler.SetTimestamp)
 	apiHandler.HandleFunc("/api/deviceMgr/getTimestamp", deviceHandler.GetTimestamp)
 	apiHandler.HandleFunc("/api/deviceMgr/setTimezone", deviceHandler.SetTimezone)
@@ -251,6 +260,7 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/getTimezoneList", deviceHandler.GetTimezoneList)
 	apiHandler.HandleFunc("/api/deviceMgr/updateChannel", deviceHandler.UpdateChannel)
 	apiHandler.HandleFunc("/api/deviceMgr/getSystemUpdateVersion", deviceHandler.GetSystemUpdateVersion)
+	apiHandler.HandleFunc("/api/deviceMgr/getUpdateCheckProgress", deviceHandler.GetUpdateCheckProgress)
 	apiHandler.HandleFunc("/api/deviceMgr/updateSystem", deviceHandler.UpdateSystem)
 	apiHandler.HandleFunc("/api/deviceMgr/getUpdateProgress", deviceHandler.GetUpdateProgress)
 	apiHandler.HandleFunc("/api/deviceMgr/cancelUpdate", deviceHandler.CancelUpdate)

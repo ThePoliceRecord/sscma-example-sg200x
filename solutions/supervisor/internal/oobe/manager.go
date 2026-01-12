@@ -3,6 +3,7 @@ package oobe
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -154,8 +155,10 @@ func (m *Manager) startOOBE() error {
 
 	logger.Info("Started OOBE process (PID: %d) on %s", m.cmd.Process.Pid, ListenAddr)
 
-	// Wait for OOBE to be ready (health check)
-	if err := m.waitForOOBEReady(); err != nil {
+	// Wait for OOBE to be ready (health check) and detect whether it's serving
+	// HTTP or HTTPS on the loopback interface.
+	target, err := m.waitForOOBEReady()
+	if err != nil {
 		m.cmd.Process.Kill()
 		m.cmd.Wait()
 		m.cmd = nil
@@ -163,10 +166,16 @@ func (m *Manager) startOOBE() error {
 	}
 
 	// Create reverse proxy
-	target, _ := url.Parse("http://" + ListenAddr)
 	m.proxy = httputil.NewSingleHostReverseProxy(target)
+	// If the OOBE server is running HTTPS on loopback (e.g., older binaries or
+	// default config), allow the proxy to connect even with self-signed certs.
+	if target.Scheme == "https" {
+		m.proxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 
-	// Custom director to set forwarding headers
+	// Custom director to set forwarding headers and strip /oobe prefix
 	originalDirector := m.proxy.Director
 	m.proxy.Director = func(req *http.Request) {
 		originalDirector(req)
@@ -175,10 +184,18 @@ func (m *Manager) startOOBE() error {
 			req.Header.Set("X-Real-IP", clientIP)
 			req.Header.Set("X-Forwarded-For", clientIP)
 		}
+		
+		// Strip /oobe prefix from path for the OOBE server
+		// The OOBE server's web root is already the OOBE directory
+		if strings.HasPrefix(req.URL.Path, "/oobe/") {
+			req.URL.Path = "/" + strings.TrimPrefix(req.URL.Path, "/oobe/")
+		} else if req.URL.Path == "/oobe" {
+			req.URL.Path = "/"
+		}
 	}
 
 	m.proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		logger.Error("OOBE proxy error: %v", err)
+		logger.Error("OOBE proxy error for %s %s: %v", r.Method, r.URL.String(), err)
 		http.Error(w, "OOBE temporarily unavailable", http.StatusBadGateway)
 	}
 
@@ -229,23 +246,43 @@ func (m *Manager) stopOOBE() error {
 	return nil
 }
 
+
 // waitForOOBEReady performs a health check to ensure OOBE is ready.
-func (m *Manager) waitForOOBEReady() error {
-	client := &http.Client{Timeout: time.Second}
+// It returns the base URL (scheme + host) to use for the reverse proxy.
+func (m *Manager) waitForOOBEReady() (*url.URL, error) {
+	httpClient := &http.Client{Timeout: time.Second}
+	httpsClient := &http.Client{
+		Timeout: time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	deadline := time.Now().Add(StartupTimeout)
 
+	httpHealthURL := "http://" + ListenAddr + "/api/health"
+	httpsHealthURL := "https://" + ListenAddr + "/api/health"
+
 	for time.Now().Before(deadline) {
-		resp, err := client.Get("http://" + ListenAddr + "/oobe/api/health")
-		if err == nil {
-			resp.Body.Close()
+		// Try HTTP first (preferred; supervisor already terminates TLS)
+		if resp, err := httpClient.Get(httpHealthURL); err == nil {
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				return url.Parse("http://" + ListenAddr)
 			}
 		}
+
+		// Fallback: some images/binaries may run OOBE as HTTPS on loopback.
+		if resp, err := httpsClient.Get(httpsHealthURL); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return url.Parse("https://" + ListenAddr)
+			}
+		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return fmt.Errorf("OOBE failed to start within timeout")
+	return nil, fmt.Errorf("OOBE failed to start within timeout")
 }
 
 // monitorProcess watches for unexpected OOBE process termination.

@@ -4,7 +4,7 @@
  */
 
 class SupervisorAPI {
-  constructor(baseUrl = null) {
+  constructor(baseUrl = null, tokenManager = null) {
     // Auto-detect supervisor URL
     // Try current hostname first, then localhost
     if (!baseUrl) {
@@ -18,7 +18,19 @@ class SupervisorAPI {
     } else {
       this.baseUrl = baseUrl;
     }
-    this.token = localStorage.getItem('authToken');
+    
+    // Use provided token manager or create a fallback
+    this.tokenManager = tokenManager || {
+      getToken: (key) => localStorage.getItem(key),
+      setToken: (key, value) => localStorage.setItem(key, value),
+      removeToken: (key) => localStorage.removeItem(key)
+    };
+    
+    this.token = this.tokenManager.getToken('authToken');
+    
+    // Callback for handling auth failures (401 errors)
+    // Set this to handle re-login flow
+    this.onAuthFailure = null;
   }
 
   /**
@@ -32,10 +44,10 @@ class SupervisorAPI {
       },
     };
 
-    // Always get the latest token from localStorage before making a request
+    // Always get the latest token from secure storage before making a request
     // This ensures we use the token even if it was set after the API instance was created
     if (requiresAuth) {
-      const currentToken = localStorage.getItem('authToken');
+      const currentToken = this.tokenManager.getToken('authToken');
       if (currentToken) {
         options.headers['Authorization'] = `Bearer ${currentToken}`;
         console.log(`[API] ${method} ${endpoint} with auth token (${currentToken.substring(0, 20)}...)`);
@@ -56,6 +68,18 @@ class SupervisorAPI {
 
       // Check if response is OK before parsing
       if (!response.ok) {
+        // Handle 401 Unauthorized - token is invalid or expired
+        if (response.status === 401) {
+          console.warn(`[API] Auth failure (401) for ${method} ${endpoint} - token may be invalid or expired`);
+          // Clear the invalid token
+          this.clearToken();
+          // Trigger auth failure callback if set
+          if (this.onAuthFailure) {
+            this.onAuthFailure('Token expired or invalid. Please login again.');
+          }
+          return { success: false, error: 'Authentication required', code: 401, authFailure: true };
+        }
+        
         // Try to get error message from response body
         let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
         try {
@@ -103,7 +127,7 @@ class SupervisorAPI {
    */
   setToken(token) {
     this.token = token;
-    localStorage.setItem('authToken', token);
+    this.tokenManager.setToken('authToken', token);
   }
 
   /**
@@ -111,7 +135,7 @@ class SupervisorAPI {
    */
   clearToken() {
     this.token = null;
-    localStorage.removeItem('authToken');
+    this.tokenManager.removeToken('authToken');
   }
 
   // ========== System Information ==========
@@ -127,13 +151,21 @@ class SupervisorAPI {
   }
 
   async login(username, password) {
+    console.log(`[API] Attempting login for user: ${username}`);
     const result = await this.request('/api/userMgr/login', 'POST', {
-      username,
+      userName: username,
       password
     }, false);
 
     if (result.success && result.data.token) {
-      this.setToken(result.data.token);
+      const newToken = result.data.token;
+      const oldToken = this.tokenManager.getToken('authToken');
+      console.log(`[API] Login successful for ${username}`);
+      console.log(`[API] Old token: ${oldToken ? oldToken.substring(0, 20) + '...' : 'none'}`);
+      console.log(`[API] New token: ${newToken.substring(0, 20)}...`);
+      this.setToken(newToken);
+    } else {
+      console.warn(`[API] Login failed for ${username}:`, result.error || result.msg);
     }
 
     return result;

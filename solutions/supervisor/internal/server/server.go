@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -100,14 +101,14 @@ func (s *Server) Start() error {
 	if s.cfg.HTTPPort != "" && s.cfg.HTTPPort != "0" {
 		s.httpServer = &http.Server{
 			Addr:         ":" + s.cfg.HTTPPort,
-			Handler:      s.httpsRedirectHandler(),
+			Handler:      s.httpHandler(rootMux),
 			ReadTimeout:  readTimeout,
 			WriteTimeout: writeTimeout,
 			IdleTimeout:  120 * time.Second,
 		}
 
 		go func() {
-			logger.Info("HTTP redirect server starting on port %s (redirecting to HTTPS)", s.cfg.HTTPPort)
+			logger.Info("HTTP server starting on port %s (AP clients served over HTTP; others redirected to HTTPS)", s.cfg.HTTPPort)
 			if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error("HTTP server error: %v", err)
 			}
@@ -132,6 +133,43 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+func (s *Server) httpHandler(rootHandler http.Handler) http.Handler {
+	redirectHandler := s.httpsRedirectHandler()
+
+	// AP clients are on wlan1 and should get a plain HTTP captive portal experience.
+	apNet := &net.IPNet{IP: net.IPv4(192, 168, 16, 0), Mask: net.CIDRMask(24, 32)}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ip := clientIPFromRequest(r); ip != nil {
+			if ip4 := ip.To4(); ip4 != nil && apNet.Contains(ip4) {
+				rootHandler.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		redirectHandler.ServeHTTP(w, r)
+	})
+}
+
+func clientIPFromRequest(r *http.Request) net.IP {
+	// Prefer X-Forwarded-For when present (first hop).
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip
+		}
+	}
+
+	// RemoteAddr is typically ip:port.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return net.ParseIP(host)
+	}
+
+	// Fallback: try parsing the full RemoteAddr (some servers may omit port).
+	return net.ParseIP(r.RemoteAddr)
 }
 
 // httpsRedirectHandler returns a handler that redirects all HTTP requests to HTTPS.
@@ -216,10 +254,10 @@ func (s *Server) setupRoutes() http.Handler {
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
-		"/api/userMgr/login":                  true,
-		"/api/deviceMgr/queryDeviceInfo":      true, // Needed before login to get device SN
-		"/api/deviceMgr/oauthCallback":        true, // OAuth callback from Auth0 (OOBE)
-		"/api/deviceMgr/generateCameraToken":  true, // Generate camera token during OOBE (proxies to platform)
+		"/api/userMgr/login":                 true,
+		"/api/deviceMgr/queryDeviceInfo":     true, // Needed before login to get device SN
+		"/api/deviceMgr/oauthCallback":       true, // OAuth callback from Auth0 (OOBE)
+		"/api/deviceMgr/generateCameraToken": true, // Generate camera token during OOBE (proxies to platform)
 	}
 
 	// Auth middleware

@@ -75,7 +75,7 @@ function About() {
           </div>
           <div className="flex justify-between py-8 border-b border-white/10">
             <span className="text-14 text-platinum/70">Hardware Model</span>
-            <span className="text-14 text-platinum">reCamera S1</span>
+            <span className="text-14 text-platinum">Authority Alert S1</span>
           </div>
           <div className="flex justify-between py-8">
             <span className="text-14 text-platinum/70">Serial Number</span>

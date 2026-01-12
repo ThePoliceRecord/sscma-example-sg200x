@@ -134,7 +134,9 @@ func (m *WiFiManager) updateAPSSID() {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "ssid=AUOK") {
+	// Only auto-mutate the SSID when the config still has the default marker.
+	// This keeps user-customized SSIDs stable across reboots.
+	if !strings.Contains(content, "ssid=AuthorityAlert") {
 		return
 	}
 
@@ -146,7 +148,7 @@ func (m *WiFiManager) updateAPSSID() {
 	parts := strings.Split(mac, ":")
 	if len(parts) >= 6 {
 		suffix := parts[3] + parts[4] + parts[5]
-		newSSID := "reCamera_" + suffix
+		newSSID := "AuthorityAlert_" + suffix
 		content = regexp.MustCompile(`ssid=.*`).ReplaceAllString(content, "ssid="+newSSID)
 		os.WriteFile(HostAPDConf, []byte(content), 0644)
 	}

@@ -25,7 +25,7 @@ const Main: React.FC<Props> = ({ children }) => {
         systemUpdateState.status != UpdateStatus.NeedUpdate
       ) {
         const response = await fetch(
-          "https://api.github.com/repos/seeed-Studio/recamera-os/releases/latest"
+          "https://api.github.com/repos/ThePoliceRecord/authority-alert-OS/releases/latest"
         );
         if (response.ok && response.status == 200) {
           const data = await response.json();
@@ -83,17 +83,17 @@ const Main: React.FC<Props> = ({ children }) => {
         }
       >
         <p style={{ marginBottom: "6px" }}>
-          reCamera is now on version {newVersion} now. Check update details
+          Authority Alert OS has a new release: {newVersion}. Check update details
           here:
         </p>
         <a
-          href="https://github.com/Seeed-Studio/reCamera-OS/releases"
+          href="https://github.com/ThePoliceRecord/authority-alert-OS/releases"
           style={{
             color: "#4096ff",
           }}
           target="_blank"
         >
-          https://github.com/Seeed-Studio/reCamera-OS/releases
+          https://github.com/ThePoliceRecord/authority-alert-OS/releases
         </a>
       </Modal>
     </>

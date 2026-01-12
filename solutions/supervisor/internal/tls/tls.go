@@ -142,11 +142,11 @@ func (m *Manager) getDeviceName() string {
 	data, err := os.ReadFile(DeviceNameFile)
 	if err != nil {
 		logger.Warning("Failed to read device name: %v, using default", err)
-		return "reCamera"
+		return "authorityalert"
 	}
 	name := strings.TrimSpace(string(data))
 	if name == "" {
-		return "reCamera"
+		return "authorityalert"
 	}
 	return name
 }
@@ -173,6 +173,15 @@ func (m *Manager) generateCertificates() error {
 	if commonName == "" {
 		commonName = m.getDeviceName()
 	}
+
+	// Build DNS SANs.
+	// - "authorityalert" / "authorityalert.local" allow stable access when the device name file is missing.
+	// - "<device>.local" supports mDNS hostnames derived from the boot-time identity script.
+	dnsNames := []string{"localhost", "authorityalert", "authorityalert.local", commonName}
+	if commonName != "" && !strings.HasSuffix(commonName, ".local") {
+		dnsNames = append(dnsNames, commonName+".local")
+	}
+	dnsNames = uniqueNonEmptyStrings(dnsNames)
 
 	// Build Subject DN
 	subject := pkix.Name{
@@ -213,7 +222,7 @@ func (m *Manager) generateCertificates() error {
 		SignatureAlgorithm: x509.ECDSAWithSHA384,
 
 		// Subject Alternative Names
-		DNSNames:    []string{"localhost", "recamera", "recamera.local", commonName},
+		DNSNames:    dnsNames,
 		IPAddresses: ipAddresses,
 	}
 
@@ -257,6 +266,23 @@ func (m *Manager) generateCertificates() error {
 	logger.Info("  Private Key: %s", m.keyFile)
 
 	return nil
+}
+
+func uniqueNonEmptyStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // GetTLSConfig returns a secure TLS configuration for the server.

@@ -49,6 +49,10 @@
         </div>
         <div class="step">
           <div class="step-circle">5</div>
+          <div class="step-label">Register</div>
+        </div>
+        <div class="step">
+          <div class="step-circle">6</div>
           <div class="step-label">Complete</div>
         </div>
       </div>
@@ -222,8 +226,54 @@
         </div>
       </div>
 
-      <!-- Step 5: Completion -->
+      <!-- Step 5: Camera Registration -->
       <div id="step-5" class="setup-step hidden">
+        <div class="card">
+          <h2 class="card-title">Register Your Camera</h2>
+          <p>Sign in with your The Police Record account to register this camera and enable cloud features.</p>
+          
+          <!-- Registration Status -->
+          <div id="registration-status" class="registration-status hidden">
+            <div id="registration-status-icon" class="status-icon"></div>
+            <div id="registration-status-text" class="status-text"></div>
+          </div>
+          
+          <!-- Sign In Section -->
+          <div id="signin-section" class="signin-section">
+            <div class="signin-info">
+              <p>Click the button below to sign in with your account. You'll be redirected to a secure login page.</p>
+              <p class="signin-note">Don't have an account? You can create one during the sign-in process.</p>
+            </div>
+            
+            <button type="button" id="oauth-signin-btn" class="btn btn-primary btn-large" onclick="oobeApp.handleOAuthSignIn()">
+              🔐 Sign In with The Police Record
+            </button>
+          </div>
+          
+          <!-- Post-Registration Info (shown after successful registration) -->
+          <div id="registration-success" class="registration-success hidden">
+            <div class="success-icon">✓</div>
+            <h3>Camera Registered Successfully!</h3>
+            <p>Your camera is now linked to your account and ready to use.</p>
+          </div>
+          
+          <!-- Action Buttons -->
+          <div class="btn-group">
+            <button type="button" class="btn btn-secondary" onclick="oobeApp.showStep(4)">
+              ← Back
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="oobeApp.handleRegistrationSkip()">
+              Skip for Now
+            </button>
+            <button type="button" id="continue-after-registration-btn" class="btn btn-success hidden" onclick="oobeApp.handleRegistrationComplete()">
+              Continue →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 6: Completion -->
+      <div id="step-6" class="setup-step hidden">
         <div class="card">
           <h2 class="card-title">Setup Complete!</h2>
           
@@ -251,6 +301,7 @@
     </div>
 
     <!-- Scripts -->
+    <script src="/js/jmuxer.min.js"></script>
     <script src="/js/supervisor-api.js"></script>
     <script src="/js/oobe-app.js"></script>
   </body>

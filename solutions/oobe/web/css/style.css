@@ -563,3 +563,239 @@ body {
 .wifi-list::-webkit-scrollbar-thumb:hover {
   background: var(--blue-2);
 }
+
+/* Camera Registration Styles */
+.video-container {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  margin: 1.5rem auto;
+  background: #000;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 2px solid var(--blue-1);
+}
+
+.video-container video {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.scan-status {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: rgba(59, 130, 246, 0.9);
+  color: white;
+  padding: 0.75rem;
+  text-align: center;
+  font-weight: 600;
+  font-size: 1rem;
+  z-index: 10;
+}
+
+.scan-status.scanning {
+  background: rgba(234, 179, 8, 0.9);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.scan-status.success {
+  background: rgba(34, 197, 94, 0.9);
+}
+
+.scan-status.error {
+  background: rgba(239, 68, 68, 0.9);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; }
+}
+
+.video-status {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.875rem;
+  z-index: 10;
+}
+
+.registration-instructions {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  background: rgba(31, 169, 255, 0.15);
+  border-left: 4px solid var(--cobalt-blue);
+  border-radius: 0.25rem;
+}
+
+.registration-instructions h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+  color: var(--cobalt-blue);
+}
+
+.registration-instructions ol {
+  margin: 0;
+  padding-left: 1.5rem;
+  color: var(--platinum);
+}
+
+.registration-instructions li {
+  margin-bottom: 0.5rem;
+}
+
+.btn-info {
+  background: var(--cobalt-blue);
+  color: var(--white-color);
+  border: 1px solid var(--blue-2);
+}
+
+.btn-info:hover:not(:disabled) {
+  background: var(--blue-2);
+  box-shadow: 0 0 15px rgba(31, 169, 255, 0.5);
+}
+
+/* Responsive adjustments for video */
+@media (max-width: 640px) {
+  .video-container {
+    max-width: 100%;
+  }
+  
+  .registration-instructions {
+    font-size: 0.875rem;
+  }
+  
+  .registration-instructions ol {
+    padding-left: 1.25rem;
+  }
+}
+
+/* OAuth Sign-In Styles */
+.signin-section {
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.signin-info {
+  margin-bottom: 2rem;
+}
+
+.signin-info p {
+  color: var(--platinum);
+  margin-bottom: 0.75rem;
+}
+
+.signin-note {
+  font-size: 0.875rem;
+  color: var(--gray-1);
+}
+
+.btn-large {
+  padding: 1rem 2rem;
+  font-size: 1.125rem;
+  min-width: 280px;
+}
+
+/* Registration Status */
+.registration-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  border-radius: 0.5rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--gray-4);
+}
+
+.registration-status.loading {
+  border-color: var(--cobalt-blue);
+  background: rgba(31, 169, 255, 0.1);
+}
+
+.registration-status.success {
+  border-color: var(--cta-color);
+  background: rgba(155, 229, 100, 0.1);
+}
+
+.registration-status.error {
+  border-color: var(--error-color);
+  background: rgba(115, 0, 1, 0.2);
+}
+
+.status-icon {
+  font-size: 2rem;
+}
+
+.status-text {
+  font-size: 1rem;
+  color: var(--platinum);
+}
+
+/* Registration Success */
+.registration-success {
+  text-align: center;
+  padding: 2rem;
+}
+
+.registration-success .success-icon {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  background: var(--cta-color);
+  color: var(--black-color);
+  font-size: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 1rem;
+}
+
+.registration-success h3 {
+  color: var(--cta-color);
+  margin-bottom: 0.5rem;
+}
+
+.registration-success p {
+  color: var(--platinum);
+}
+
+/* OAuth Button Styling */
+#oauth-signin-btn {
+  background: linear-gradient(135deg, var(--blue-1) 0%, var(--blue-2) 100%);
+  border: 2px solid var(--cobalt-blue);
+  box-shadow: 0 4px 15px rgba(35, 40, 187, 0.4);
+  transition: all 0.3s ease;
+}
+
+#oauth-signin-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(35, 40, 187, 0.6);
+}
+
+#oauth-signin-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Responsive OAuth */
+@media (max-width: 640px) {
+  .btn-large {
+    min-width: 100%;
+    padding: 0.875rem 1.5rem;
+    font-size: 1rem;
+  }
+  
+  .signin-section {
+    padding: 1.5rem 0.5rem;
+  }
+}

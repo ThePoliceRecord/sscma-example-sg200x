@@ -15,9 +15,9 @@
 #include <time.h>
 
 #define LOG_TAG "video_shm"
-#define LOG_INFO(fmt, ...) printf("[%s] INFO: " fmt "\n", LOG_TAG, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...) fprintf(stderr, "[%s] INFO: " fmt "\n", LOG_TAG, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) fprintf(stderr, "[%s] ERROR: " fmt "\n", LOG_TAG, ##__VA_ARGS__)
-#define LOG_DEBUG(fmt, ...) printf("[%s] DEBUG: " fmt "\n", LOG_TAG, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) fprintf(stderr, "[%s] DEBUG: " fmt "\n", LOG_TAG, ##__VA_ARGS__)
 
 /* Helper: Get current timestamp in milliseconds */
 static uint64_t get_timestamp_ms(void) {
@@ -313,8 +313,8 @@ int video_shm_consumer_read(video_shm_consumer_t* consumer,
     }
     consumer->last_sequence = current_count;
 
-    LOG_DEBUG("Frame read: seq=%u, size=%u, idx=%u", 
-              meta->sequence, meta->size, idx);
+    // LOG_DEBUG("Frame read: seq=%u, size=%u, idx=%u", 
+    //           meta->sequence, meta->size, idx);
 
     return meta->size;
 }

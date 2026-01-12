@@ -4,7 +4,9 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -45,6 +47,9 @@ type Config struct {
 
 	// Runtime settings
 	DaemonMode bool
+
+	// The Police Record / Authority Alert platform settings
+	TPRPlatformURL string // Base URL for platform API (e.g. https://thepolicerecord.com)
 }
 
 // LogLevels
@@ -89,6 +94,10 @@ func DefaultConfig() *Config {
 		LogLevel: LogWarning,
 
 		DaemonMode: false,
+
+		// Default to development for testing
+		// Override via env: TPR_PLATFORM_URL=https://thepolicerecord.com for production
+		TPRPlatformURL: "https://dev.thepolicerecord.com",
 	}
 }
 
@@ -98,10 +107,53 @@ func Get() *Config {
 		instance = DefaultConfig()
 		instance.loadFromEnv()
 		if instance.JWTSecret == nil {
-			instance.JWTSecret = generateSecureKey(32)
+			// Try to load JWT secret from file first (for persistence across restarts)
+			instance.JWTSecret = instance.loadOrCreateJWTSecret()
 		}
 	})
 	return instance
+}
+
+// jwtSecretFile returns the path to the JWT secret file.
+func (c *Config) jwtSecretFile() string {
+	// Store in the cert directory alongside TLS certs
+	return filepath.Join(c.CertDir, "jwt_secret")
+}
+
+// loadOrCreateJWTSecret loads the JWT secret from file, or creates a new one if it doesn't exist.
+// This ensures tokens remain valid across supervisor restarts.
+func (c *Config) loadOrCreateJWTSecret() []byte {
+	secretFile := c.jwtSecretFile()
+
+	// Try to read existing secret
+	if data, err := os.ReadFile(secretFile); err == nil && len(data) >= 32 {
+		// Secret file exists and has valid content
+		log.Printf("[config] Loaded existing JWT secret from %s (tokens will persist)", secretFile)
+		return data
+	}
+
+	// Generate new secret
+	secret := generateSecureKey(32)
+	log.Printf("[config] Generated new JWT secret (old tokens will be invalid)")
+
+	// Try to save it for future restarts
+	// Create directory if needed
+	dir := filepath.Dir(secretFile)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		// Can't create directory - secret won't persist
+		log.Printf("[config] WARNING: Cannot create directory %s: %v - JWT secret will not persist", dir, err)
+		return secret
+	}
+
+	// Write secret with restrictive permissions (owner read/write only)
+	if err := os.WriteFile(secretFile, secret, 0600); err != nil {
+		// Log warning but continue - secret will just be regenerated on next restart
+		log.Printf("[config] WARNING: Cannot save JWT secret to %s: %v - tokens will not persist across restarts", secretFile, err)
+	} else {
+		log.Printf("[config] Saved JWT secret to %s (tokens will persist across restarts)", secretFile)
+	}
+
+	return secret
 }
 
 // loadFromEnv loads configuration from environment variables.
@@ -152,6 +204,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if sdDir := os.Getenv("SUPERVISOR_SD_DIR"); sdDir != "" {
 		c.SDDir = sdDir
+	}
+	if platformURL := os.Getenv("TPR_PLATFORM_URL"); platformURL != "" {
+		c.TPRPlatformURL = platformURL
 	}
 }
 

@@ -15,12 +15,16 @@ check_avahi() {
         sed -i '/<type>_sscma._tcp<\/type>/a \ \ \ \ '"$txt_record" "$service_file"
         sync
 
-        /etc/init.d/S50avahi-daemon stop
-        sleep 1
-        /etc/init.d/S50avahi-daemon start
+        # Restart avahi in background to avoid blocking supervisor startup
+        # and causing network disruption during WiFi initialization
+        (
+            sleep 3
+            /etc/init.d/S50avahi-daemon stop
+            sleep 1
+            /etc/init.d/S50avahi-daemon start
+        ) &
     fi
 }
-check_avahi
 
 start() {
     printf 'Starting Supervisor Service: '
@@ -31,6 +35,8 @@ start() {
     else
         $DAEMON_PATH/$DAEMON >/dev/null 2>&1 &
         [ $? = 0 ] && echo "OK" || echo "FAIL"
+        # Run avahi check after supervisor starts to avoid network disruption
+        check_avahi
     fi
 }
 

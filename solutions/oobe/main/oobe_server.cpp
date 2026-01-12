@@ -43,18 +43,33 @@ static void get_mac_address(const char *interface, char *mac_buf, size_t buf_siz
   }
 }
 
+// Helper function to check if URI matches (with or without /oobe prefix)
+static int uri_matches(struct mg_str uri, const char *path) {
+  // Check exact match
+  if (mg_strcmp(uri, mg_str(path)) == 0) return 1;
+  
+  // Check with /oobe prefix
+  char prefixed[256];
+  snprintf(prefixed, sizeof(prefixed), "/oobe%s", path);
+  if (mg_strcmp(uri, mg_str(prefixed)) == 0) return 1;
+  
+  return 0;
+}
+
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
   if (ev != MG_EV_HTTP_MSG) return;
 
   struct mg_http_message *hm = (struct mg_http_message *) ev_data;
   const struct app_config *cfg = (const struct app_config *) c->fn_data;
 
-  if (mg_strcmp(hm->uri, mg_str("/oobe/api/health")) == 0) {
+  // API endpoints - handle both with and without /oobe prefix
+  // (supervisor proxy strips /oobe prefix, but direct access keeps it)
+  if (uri_matches(hm->uri, "/api/health")) {
     reply_json(c, 200, "{\"ok\":true,\"service\":\"oobe\"}");
     return;
   }
 
-  if (mg_strcmp(hm->uri, mg_str("/oobe/api/getNetworkInfo")) == 0) {
+  if (uri_matches(hm->uri, "/api/getNetworkInfo")) {
     char eth0_mac[32] = {0};
     char wlan0_mac[32] = {0};
     
@@ -70,16 +85,21 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     return;
   }
 
-  if (mg_strcmp(hm->uri, mg_str("/oobe/api/saveDeviceInfo")) == 0 && mg_strcmp(hm->method, mg_str("POST")) == 0) {
-    // Create userdata directory if it doesn't exist
+  if (uri_matches(hm->uri, "/api/saveRegistration") && mg_strcmp(hm->method, mg_str("POST")) == 0) {
+    // Create userdata/config directory if it doesn't exist
     mkdir("/userdata", 0755);
+    mkdir("/userdata/config", 0755);
 
-    // Write device info to file
-    FILE *fp = fopen("/userdata/device_info.json", "w");
+    // Write registration data to file
+    FILE *fp = fopen("/userdata/config/police-record.json", "w");
     if (fp) {
       fwrite(hm->body.buf, 1, hm->body.len, fp);
       fclose(fp);
-      reply_json(c, 200, "{\"ok\":true,\"message\":\"Device info saved\"}");
+      
+      // Set file permissions to 600 (owner read/write only) for security
+      chmod("/userdata/config/police-record.json", 0600);
+      
+      reply_json(c, 200, "{\"ok\":true,\"message\":\"Registration saved\"}");
     } else {
       char error_msg[256];
       snprintf(error_msg, sizeof(error_msg), "{\"ok\":false,\"error\":\"Failed to save: %s\"}", strerror(errno));
@@ -88,7 +108,43 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     return;
   }
 
-  if (mg_strcmp(hm->uri, mg_str("/oobe/api/complete")) == 0 && mg_strcmp(hm->method, mg_str("POST")) == 0) {
+  if (uri_matches(hm->uri, "/api/registrationStatus")) {
+    // Check if registration file exists
+    struct stat st;
+    if (stat("/userdata/config/police-record.json", &st) == 0) {
+      // File exists, read and return it
+      FILE *fp = fopen("/userdata/config/police-record.json", "r");
+      if (fp) {
+        fseek(fp, 0, SEEK_END);
+        long fsize = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        
+        char *content = (char*)malloc(fsize + 1);
+        if (content) {
+          fread(content, 1, fsize, fp);
+          content[fsize] = '\0';
+          fclose(fp);
+          
+          // Build response with registration data
+          char response[fsize + 100];
+          snprintf(response, sizeof(response), "{\"ok\":true,\"registered\":true,\"data\":%s}", content);
+          reply_json(c, 200, response);
+          free(content);
+        } else {
+          fclose(fp);
+          reply_json(c, 500, "{\"ok\":false,\"error\":\"Memory allocation failed\"}");
+        }
+      } else {
+        reply_json(c, 500, "{\"ok\":false,\"error\":\"Failed to read registration file\"}");
+      }
+    } else {
+      // File doesn't exist, not registered
+      reply_json(c, 200, "{\"ok\":true,\"registered\":false}");
+    }
+    return;
+  }
+
+  if (uri_matches(hm->uri, "/api/complete") && mg_strcmp(hm->method, mg_str("POST")) == 0) {
     // Remove the OOBE flag file to signal completion
     if (unlink("/etc/oobe/flag") == 0) {
       reply_json(c, 200, "{\"ok\":true,\"message\":\"OOBE completed\"}");
@@ -100,11 +156,51 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     return;
   }
 
+  // Handle root path "/" and /index.html - serve index.html for SPA routing
+  // This handles OAuth callbacks like /?code=...&state=... or /index.html?code=...&state=...
+  // (after supervisor strips /oobe prefix)
+  // Also handle /oobe/ and /oobe paths for direct access
+  // Extract path without query string for comparison
+  struct mg_str path = hm->uri;
+  for (size_t i = 0; i < hm->uri.len; i++) {
+    if (hm->uri.buf[i] == '?') {
+      path.len = i;
+      break;
+    }
+  }
+  
+  if (mg_strcmp(path, mg_str("/")) == 0 ||
+      mg_strcmp(path, mg_str("/index.html")) == 0 ||
+      mg_strcmp(path, mg_str("/oobe/")) == 0 ||
+      mg_strcmp(path, mg_str("/oobe")) == 0 ||
+      mg_strcmp(path, mg_str("/oobe/index.html")) == 0) {
+    // Serve index.html for the root path
+    char index_path[512];
+    snprintf(index_path, sizeof(index_path), "%s/index.html", cfg->root_dir);
+    
+    struct mg_http_serve_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.root_dir = cfg->root_dir;
+    opts.extra_headers = "Content-Type: text/html\r\n";
+    mg_http_serve_file(c, hm, index_path, &opts);
+    return;
+  }
+
+  // For other paths, serve from root directory
   struct mg_http_serve_opts opts;
   memset(&opts, 0, sizeof(opts));
   opts.root_dir = cfg->root_dir;
   opts.page404 = "index.html";
-  mg_http_serve_dir(c, hm, &opts);
+  
+  // If path starts with /oobe/, strip the prefix
+  if (hm->uri.len > 6 && strncmp(hm->uri.buf, "/oobe/", 6) == 0) {
+    struct mg_http_message modified_hm = *hm;
+    modified_hm.uri.buf = hm->uri.buf + 5;  // Skip "/oobe"
+    modified_hm.uri.len = hm->uri.len - 5;
+    mg_http_serve_dir(c, &modified_hm, &opts);
+  } else {
+    mg_http_serve_dir(c, hm, &opts);
+  }
 }
 
 static void usage(const char *argv0) {

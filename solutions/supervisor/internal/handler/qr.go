@@ -187,18 +187,30 @@ func (h *QRHandler) StartScan(w http.ResponseWriter, r *http.Request) {
 	args := []string{
 		"--timeout", strconv.Itoa(req.Timeout),
 		"--max-results", strconv.Itoa(req.MaxResults),
+		"--keyframes-only", "0", // Process all frames, not just keyframes
 	}
 	if req.Schema != "" {
 		args = append(args, "--schema", req.Schema)
 	}
 
-	logger.Info("Starting QR scan %s with args: %v", scanID, args)
+	logger.Info("Starting QR scan %s with command: %s %v", scanID, h.qrReaderPath, args)
 
-	// Create command
+	// Create command with pipes for stdout/stderr
 	cmd := exec.Command(h.qrReaderPath, args...)
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
+	
+	// Use pipes instead of buffers for more reliable output capture
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		logger.Error("Failed to create stdout pipe: %v", err)
+		api.WriteError(w, -1, "Failed to start QR scan")
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		logger.Error("Failed to create stderr pipe: %v", err)
+		api.WriteError(w, -1, "Failed to start QR scan")
+		return
+	}
 
 	// Start process
 	if err := cmd.Start(); err != nil {
@@ -220,7 +232,28 @@ func (h *QRHandler) StartScan(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(session.done)
 
-		// Wait for process
+		// Read stdout and stderr before waiting (important!)
+		var stdoutBuf, stderrBuf bytes.Buffer
+		
+		// Read stdout in a goroutine
+		stdoutDone := make(chan struct{})
+		go func() {
+			stdoutBuf.ReadFrom(stdoutPipe)
+			close(stdoutDone)
+		}()
+		
+		// Read stderr in a goroutine
+		stderrDone := make(chan struct{})
+		go func() {
+			stderrBuf.ReadFrom(stderrPipe)
+			close(stderrDone)
+		}()
+		
+		// Wait for both reads to complete
+		<-stdoutDone
+		<-stderrDone
+
+		// Now wait for process to exit
 		err := cmd.Wait()
 		exitCode := 0
 		if err != nil {
@@ -233,15 +266,29 @@ func (h *QRHandler) StartScan(w http.ResponseWriter, r *http.Request) {
 		stdout := strings.TrimSpace(stdoutBuf.String())
 		stderr := stderrBuf.String()
 
+		logger.Info("QR scan %s stdout (%d bytes): %s", scanID, len(stdout), stdout)
+		if stderr != "" {
+			logger.Info("QR scan %s stderr (%d bytes): %s", scanID, len(stderr), stderr)
+		}
+
 		result := &QRScanResult{}
 		if stdout != "" {
 			if jsonErr := json.Unmarshal([]byte(stdout), result); jsonErr != nil {
-				logger.Error("Failed to parse qr-reader output: %v", jsonErr)
+				logger.Error("Failed to parse qr-reader output: %v (raw: %s)", jsonErr, stdout)
 				result = &QRScanResult{
 					Success: false,
 					Reason:  "parse_error",
-					Error:   "Failed to parse output",
+					Error:   "Failed to parse output: " + jsonErr.Error(),
 				}
+			} else {
+				logger.Info("QR scan %s parsed result: success=%v, count=%d", scanID, result.Success, result.Count)
+			}
+		} else {
+			logger.Warn("QR scan %s produced no stdout output (exit code: %d)", scanID, exitCode)
+			result = &QRScanResult{
+				Success: false,
+				Reason:  "no_output",
+				Error:   "QR reader produced no output",
 			}
 		}
 
@@ -254,14 +301,13 @@ func (h *QRHandler) StartScan(w http.ResponseWriter, r *http.Request) {
 		} else if exitCode == 3 {
 			status = "cancelled"
 			result.Reason = "cancelled"
+		} else if result.Reason == "" {
+			status = "error"
 		} else {
 			status = "error"
 		}
 
 		logger.Info("QR scan %s ended with status: %s, exit code: %d", scanID, status, exitCode)
-		if stderr != "" {
-			logger.Debug("QR scan stderr: %s", stderr)
-		}
 
 		// Store completed scan
 		h.scanMutex.Lock()

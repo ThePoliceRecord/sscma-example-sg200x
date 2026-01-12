@@ -56,8 +56,12 @@ func NewWiFiHandler() *WiFiHandler {
 		stopChan:    make(chan struct{}),
 	}
 
-	// Start WiFi interfaces (STA and AP mode)
-	h.initWiFi()
+	// Start WiFi interfaces (STA and AP mode) in background after a short delay
+	// to avoid race conditions with other network services during supervisor startup
+	go func() {
+		time.Sleep(2 * time.Second)
+		h.initWiFi()
+	}()
 
 	// Start background WiFi monitoring
 	go h.monitorWiFi()

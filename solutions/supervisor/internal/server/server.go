@@ -216,8 +216,10 @@ func (s *Server) setupRoutes() http.Handler {
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
-		"/api/userMgr/login":             true,
-		"/api/deviceMgr/queryDeviceInfo": true, // Needed before login to get device SN
+		"/api/userMgr/login":                  true,
+		"/api/deviceMgr/queryDeviceInfo":      true, // Needed before login to get device SN
+		"/api/deviceMgr/oauthCallback":        true, // OAuth callback from Auth0 (OOBE)
+		"/api/deviceMgr/generateCameraToken":  true, // Generate camera token during OOBE (proxies to platform)
 	}
 
 	// Auth middleware
@@ -271,6 +273,9 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/getAnalyticsConfig", deviceHandler.GetAnalyticsConfig)
 	apiHandler.HandleFunc("/api/deviceMgr/setAnalyticsConfig", deviceHandler.SetAnalyticsConfig)
 	apiHandler.HandleFunc("/api/deviceMgr/reRegisterCamera", deviceHandler.ReRegisterCamera)
+	apiHandler.HandleFunc("/api/deviceMgr/registerCamera", deviceHandler.RegisterCamera)
+	apiHandler.HandleFunc("/api/deviceMgr/oauthCallback", deviceHandler.OAuthCallback)
+	apiHandler.HandleFunc("/api/deviceMgr/generateCameraToken", deviceHandler.GenerateCameraToken)
 
 	// Camera/Video management
 	apiHandler.HandleFunc("/api/channels", handler.GetChannels)

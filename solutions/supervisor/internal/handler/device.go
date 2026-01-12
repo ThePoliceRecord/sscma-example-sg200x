@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"supervisor/internal/api"
+	"supervisor/internal/config"
 	"supervisor/internal/device"
 	"supervisor/internal/system"
 	"supervisor/internal/upgrade"
@@ -35,6 +37,28 @@ const (
 	// OTA zips contain a full rootfs image and can be large.
 	maxOTAUploadSize int64 = 2 << 30 // 2GiB
 )
+
+func platformBaseURL() string {
+	base := strings.TrimSpace(config.Get().TPRPlatformURL)
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return "https://dev.thepolicerecord.com"
+	}
+	return base
+}
+
+func platformURL(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return platformBaseURL() + path
+}
+
+func applyPlatformCommonHeaders(req *http.Request) {
+	// Some WAF/CDN setups treat empty User-Agent as suspicious.
+	req.Header.Set("User-Agent", "recamera-supervisor")
+	req.Header.Set("Accept", "application/json")
+}
 
 // NewDeviceHandler creates a new DeviceHandler.
 func NewDeviceHandler() *DeviceHandler {
@@ -1049,7 +1073,53 @@ func saveAnalyticsConfig(config *AnalyticsConfig) error {
 	return os.WriteFile(analyticsConfigPath, data, 0644)
 }
 
-// Camera Re-registration API
+// OAuth Callback Handler
+
+// OAuthCallback handles the OAuth callback redirect.
+// This endpoint receives the OAuth callback from Auth0 and redirects to the OOBE page
+// with the code and state parameters. This avoids the OOBE proxy issue.
+func (h *DeviceHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
+	// Get the code and state from query parameters
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	errorParam := r.URL.Query().Get("error")
+	errorDesc := r.URL.Query().Get("error_description")
+
+	// Build redirect URL to OOBE page with the OAuth parameters
+	// The OOBE JavaScript will handle the token exchange
+	redirectURL := "/oobe/index.html"
+	if code != "" && state != "" {
+		redirectURL = fmt.Sprintf("/oobe/index.html?code=%s&state=%s",
+			url.QueryEscape(code), url.QueryEscape(state))
+	} else if errorParam != "" {
+		redirectURL = fmt.Sprintf("/oobe/index.html?error=%s&error_description=%s",
+			url.QueryEscape(errorParam), url.QueryEscape(errorDesc))
+	}
+
+	logger.Info("OAuth callback received, redirecting to: %s", redirectURL)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// Camera Registration APIs
+
+// CameraRegistrationRequest represents the minimal camera registration request from OOBE.
+// The supervisor will automatically populate device-specific fields from internal sources.
+// The OAuth access token is passed in the request body (not Authorization header).
+type CameraRegistrationRequest struct {
+	AccessToken  string   `json:"access_token"`  // Auth0 OAuth access token
+	LocationName string   `json:"location_name"`
+	Latitude     *float64 `json:"latitude,omitempty"`
+	Longitude    *float64 `json:"longitude,omitempty"`
+}
+
+// CameraRegistrationResponse represents the response from the platform.
+// Data can be either a map (on success) or a string (on error), so we use json.RawMessage.
+type CameraRegistrationResponse struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Key     string          `json:"key"`
+	Data    json.RawMessage `json:"data"`
+}
 
 // AACamera represents the camera registration data for Authority Alert backend.
 type AACamera struct {
@@ -1068,15 +1138,15 @@ func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request)
 
 	logger.Info("Camera re-registration requested")
 
-	// Read API key from platform info
+	// Read secret_key from platform info
 	platformInfo := device.GetPlatformInfo()
 	if platformInfo == "" {
 		logger.Error("Platform info not found - camera may not be registered yet")
-		api.WriteError(w, -1, "Camera not registered. Please scan QR code first.")
+		api.WriteError(w, -1, "Camera not registered. Please complete OOBE first.")
 		return
 	}
 
-	// Parse platform info to get API key
+	// Parse platform info to get secret_key
 	var platformData map[string]interface{}
 	if err := json.Unmarshal([]byte(platformInfo), &platformData); err != nil {
 		logger.Error("Failed to parse platform info: %v", err)
@@ -1084,11 +1154,17 @@ func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	apiKey, ok := platformData["api_key"].(string)
-	if !ok || apiKey == "" {
-		logger.Error("API key not found in platform info")
-		api.WriteError(w, -1, "API key not found. Please scan QR code first.")
-		return
+	// Look for secret_key (new) or fall back to api_key (old) for backwards compatibility
+	secretKey, ok := platformData["secret_key"].(string)
+	if !ok || secretKey == "" {
+		// Try old api_key field for backwards compatibility
+		secretKey, ok = platformData["api_key"].(string)
+		if !ok || secretKey == "" {
+			logger.Error("Secret key not found in platform info")
+			api.WriteError(w, -1, "Secret key not found. Please complete OOBE registration again.")
+			return
+		}
+		logger.Warning("Using legacy api_key field - should be secret_key")
 	}
 
 	// Build camera registration data
@@ -1099,7 +1175,7 @@ func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Call Authority Alert self-register endpoint
-	if err := selfRegisterCamera(apiKey, &cameraData); err != nil {
+	if err := selfRegisterCamera(secretKey, &cameraData); err != nil {
 		logger.Error("Failed to re-register camera: %v", err)
 		api.WriteError(w, -1, "Failed to re-register camera: "+err.Error())
 		return
@@ -1112,10 +1188,299 @@ func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// selfRegisterCamera calls the Authority Alert self-register API.
+// RegisterCamera handles camera registration from OOBE using OAuth flow.
+// The OOBE sends minimal data (location_name, lat/lon) and the OAuth access token in the body.
+// The supervisor JWT token is used for authentication (in Authorization header).
+// The supervisor automatically populates device-specific fields from internal sources.
+func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	logger.Info("Camera registration requested from OOBE")
+
+	// Parse request from OOBE (includes OAuth access token in body)
+	var req CameraRegistrationRequest
+	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("Failed to parse registration request: %v", err)
+		api.WriteError(w, -1, "Invalid request body")
+		return
+	}
+
+	// Validate required fields
+	if req.AccessToken == "" {
+		api.WriteError(w, -1, "OAuth access token required")
+		return
+	}
+	if req.LocationName == "" {
+		api.WriteError(w, -1, "Location name required")
+		return
+	}
+
+	accessToken := req.AccessToken
+
+	// Step 1: Call platform's generate-token endpoint to get camera API token
+	logger.Info("Step 1: Generating camera API token from platform")
+	tokenURL := platformURL("/api/v1/cameras/generate-token/")
+	logger.Error("Calling platform URL: GET %s", tokenURL)
+	
+	client := &http.Client{Timeout: 30 * time.Second}
+	
+	// Try GET first (current platform implementation)
+	tokenReq, err := http.NewRequest(http.MethodGet, tokenURL, nil)
+	if err != nil {
+		logger.Error("Failed to create token request: %v", err)
+		api.WriteError(w, -1, "Failed to create token request")
+		return
+	}
+	tokenReq.Header.Set("Authorization", "Bearer "+accessToken)
+	applyPlatformCommonHeaders(tokenReq)
+
+	tokenResp, err := client.Do(tokenReq)
+	if err != nil {
+		logger.Error("Failed to send token request: %v", err)
+		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
+		return
+	}
+	defer tokenResp.Body.Close()
+
+	tokenBody, err := io.ReadAll(tokenResp.Body)
+	if err != nil {
+		logger.Error("Failed to read token response: %v", err)
+		api.WriteError(w, -1, "Failed to read platform response")
+		return
+	}
+
+	logger.Info("Platform generate-token response status: %d, body: %s", tokenResp.StatusCode, string(tokenBody))
+
+	if tokenResp.StatusCode != http.StatusOK {
+		logger.Error("Platform generate-token failed with status %d: %s", tokenResp.StatusCode, string(tokenBody))
+		api.WriteError(w, -1, fmt.Sprintf("Failed to generate camera token: status %d", tokenResp.StatusCode))
+		return
+	}
+
+	var tokenData map[string]interface{}
+	if err := json.Unmarshal(tokenBody, &tokenData); err != nil {
+		logger.Error("Failed to parse token response: %v", err)
+		api.WriteError(w, -1, "Invalid token response from platform")
+		return
+	}
+
+	logger.Debug("Parsed token response: %+v", tokenData)
+
+	// Extract API token from response
+	// Platform returns: { "data": { "api_key": "...", "user_id": 1 } }
+	var apiToken string
+	var platformUserID interface{}
+	if data, ok := tokenData["data"].(map[string]interface{}); ok {
+		logger.Debug("Found 'data' field: %+v", data)
+		if token, ok := data["api_key"].(string); ok {
+			apiToken = token
+			logger.Debug("Found api_key: %s", apiToken)
+		} else {
+			logger.Debug("'api_key' field not found or not a string in data")
+		}
+		platformUserID = data["user_id"]
+		logger.Debug("user_id: %v", platformUserID)
+	} else {
+		logger.Debug("'data' field not found or not a map")
+	}
+
+	if apiToken == "" {
+		logger.Error("No API token in platform response. Full response: %s", string(tokenBody))
+		api.WriteError(w, -1, "Platform did not return API token")
+		return
+	}
+
+	logger.Info("Received camera API token from platform")
+
+	// Step 2: Collect device information from internal sources
+	deviceInfo := device.QueryDeviceInfo()
+	
+	// Get MAC addresses
+	wifiMac := system.GetMAC("wlan0")
+	if wifiMac == "" {
+		wifiMac = "unknown"
+	}
+	ethMac := system.GetMAC("eth0")
+	if ethMac == "" {
+		ethMac = "unknown"
+	}
+
+	// Generate UUIDs for camera registration
+	// In production, these should be generated by the platform or retrieved from persistent storage
+	cameraUID := deviceInfo.SN // Use serial number as camera UID for now
+	cameraID := deviceInfo.SN  // Use serial number as camera ID for now
+	
+	// Get current timestamp for registration fields
+	now := time.Now().Format(time.RFC3339)
+	
+	// Extract user_id from platform token response
+	var userID interface{} = 1 // Default to 1 if not provided
+	if platformUserID != nil {
+		userID = platformUserID
+	}
+
+	// Build complete registration payload with device info
+	platformPayload := map[string]interface{}{
+		"uid":                   cameraUID,
+		"user_id":               userID,
+		"camera_id":             cameraID,
+		"location_name":         req.LocationName,
+		"serial_number":         deviceInfo.SN,
+		"wifi_mac_address":      wifiMac,
+		"mac_address":           ethMac,
+		"device_model":          deviceInfo.Type,
+		"firmware_version":      deviceInfo.OSVersion,
+		"last_contacted":        now,
+		"installation_date":     now,
+		"creation_date":         now,
+		"last_subscribed":       now,
+		"notification_target_ids": []int{}, // Empty array by default
+	}
+	
+	// Only include latitude/longitude if provided
+	if req.Latitude != nil {
+		platformPayload["latitude"] = *req.Latitude
+	}
+	if req.Longitude != nil {
+		platformPayload["longitude"] = *req.Longitude
+	}
+
+	// Marshal payload
+	jsonData, err := json.Marshal(platformPayload)
+	if err != nil {
+		logger.Error("Failed to marshal registration payload: %v", err)
+		api.WriteError(w, -1, "Failed to prepare registration request")
+		return
+	}
+
+	logger.Info("Step 2: Sending self-registration to platform: %s", string(jsonData))
+
+	// Step 3: Call platform's self-register endpoint with the API token
+	backendURL := platformURL("/api/v1/cameras/self-register/")
+	httpReq, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		logger.Error("Failed to create platform request: %v", err)
+		api.WriteError(w, -1, "Failed to create registration request")
+		return
+	}
+
+	// Set headers - use TPR-API-KEY for the camera API token
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("TPR-API-KEY", apiToken)
+	applyPlatformCommonHeaders(httpReq)
+
+	// Send request
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		logger.Error("Failed to send platform request: %v", err)
+		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error("Failed to read platform response: %v", err)
+		api.WriteError(w, -1, "Failed to read platform response")
+		return
+	}
+
+	logger.Info("Platform self-register response status: %d, body: %s", resp.StatusCode, string(body))
+
+	// Parse platform response
+	var platformResp CameraRegistrationResponse
+	if err := json.Unmarshal(body, &platformResp); err != nil {
+		logger.Error("Failed to parse platform response: %v", err)
+		api.WriteError(w, -1, "Invalid platform response: "+string(body))
+		return
+	}
+
+	// Check if registration was successful (platform returns code 200 or 201 on success)
+	if platformResp.Code != 200 && platformResp.Code != 201 {
+		var errorDetail string
+		if len(platformResp.Data) > 0 {
+			if err := json.Unmarshal(platformResp.Data, &errorDetail); err != nil {
+				errorDetail = string(platformResp.Data)
+			}
+		}
+		errMsg := platformResp.Message
+		if errorDetail != "" {
+			errMsg = errMsg + ": " + errorDetail
+		}
+		logger.Error("Platform registration failed: code=%d, message=%s", platformResp.Code, errMsg)
+		api.WriteError(w, -1, errMsg)
+		return
+	}
+
+	// Parse data as map for successful response
+	var dataMap map[string]interface{}
+	if len(platformResp.Data) > 0 {
+		if err := json.Unmarshal(platformResp.Data, &dataMap); err != nil {
+			logger.Warning("Failed to parse platform data as map: %v", err)
+			dataMap = nil
+		}
+	}
+
+	// Extract camera UID and secret_key from response
+	var responseUID string
+	var secretKey string
+	if dataMap != nil {
+		if uid, ok := dataMap["uid"].(string); ok {
+			responseUID = uid
+		}
+		// Extract the secret_key from self-register response
+		// This is the permanent authentication key, NOT the temporary api_key from generate-token
+		if key, ok := dataMap["secret_key"].(string); ok {
+			secretKey = key
+			logger.Info("Received secret_key from platform self-register response")
+		} else {
+			logger.Warning("No secret_key in platform response, will not be able to authenticate future requests")
+		}
+	}
+	
+	// Use response UID if provided, otherwise use the one we sent
+	finalUID := responseUID
+	if finalUID == "" {
+		finalUID = cameraUID
+	}
+
+	// Save platform info locally for future use
+	// IMPORTANT: Save the secret_key from self-register, NOT the temporary api_key from generate-token
+	registrationData := map[string]interface{}{
+		"platform_url":  platformBaseURL(),
+		"secret_key":    secretKey,  // Use secret_key from self-register response
+		"camera_uid":    finalUID,
+		"user_id":       platformUserID,
+		"registered_at": time.Now().Format(time.RFC3339),
+		"camera_data":   dataMap,
+	}
+
+	registrationJSON, _ := json.MarshalIndent(registrationData, "", "  ")
+	if err := device.SavePlatformInfo(string(registrationJSON)); err != nil {
+		logger.Warning("Failed to save platform info locally: %v", err)
+		// Don't fail the request, registration was successful
+	}
+
+	logger.Info("Camera registered successfully with platform, uid=%s", finalUID)
+
+	// Return success with platform response data
+	api.WriteSuccess(w, map[string]interface{}{
+		"code":    platformResp.Code,
+		"message": platformResp.Message,
+		"uid":     finalUID,
+		"user_id": platformUserID,
+		"data":    dataMap,
+	})
+}
+
+// selfRegisterCamera calls the Authority Alert self-register API with PUT method.
 func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 	// Authority Alert backend URL
-	backendURL := "https://dev.thepolicerecord.com/api/v1/cameras/self-register/"
+	backendURL := platformURL("/api/v1/cameras/self-register/")
 
 	// Marshal camera data
 	jsonData, err := json.Marshal(cameraData)
@@ -1132,6 +1497,7 @@ func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	applyPlatformCommonHeaders(req)
 
 	// Send request
 	client := &http.Client{
@@ -1164,4 +1530,99 @@ func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 
 	logger.Info("Camera self-registration successful: %s", string(body))
 	return nil
+}
+
+// GenerateCameraToken proxies the generate-token request to the platform API.
+// This avoids CORS issues when calling the platform API from the browser.
+// The OAuth access token is passed in the Authorization header.
+func (h *DeviceHandler) GenerateCameraToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	logger.Info("Generate camera token requested")
+
+	// Get OAuth access token from request body
+	var req struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := api.ParseJSONBody(r, &req); err != nil {
+		logger.Error("Failed to parse generate-token request: %v", err)
+		api.WriteError(w, -1, "Invalid request body")
+		return
+	}
+
+	if req.AccessToken == "" {
+		api.WriteError(w, -1, "Access token required")
+		return
+	}
+
+	// Call platform API to generate camera token
+	backendURL := platformURL("/api/v1/cameras/generate-token/")
+	logger.Error("Calling platform API: %s", backendURL)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	doRequest := func(method string) (*http.Response, []byte, error) {
+		var bodyReader io.Reader
+		if method == http.MethodPost {
+			// Some backends/WAF configs treat empty-body POST oddly; send a minimal JSON object.
+			bodyReader = bytes.NewBufferString("{}")
+		}
+		httpReq, err := http.NewRequest(method, backendURL, bodyReader)
+		if err != nil {
+			return nil, nil, err
+		}
+		if method == http.MethodPost {
+			httpReq.Header.Set("Content-Type", "application/json")
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+req.AccessToken)
+		applyPlatformCommonHeaders(httpReq)
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer resp.Body.Close()
+		b, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return resp, nil, readErr
+		}
+		return resp, b, nil
+	}
+
+	// Prefer GET (matches current frontend expectation), but fall back to POST for stricter setups.
+	resp, body, err := doRequest(http.MethodGet)
+	if err != nil {
+		logger.Error("Failed to send platform request: %v", err)
+		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusMethodNotAllowed) {
+		// Retry once as POST; some deployments protect GET endpoints or route them through HTML views.
+		logger.Warning("Platform generate-token returned %d for GET; retrying as POST", resp.StatusCode)
+		resp2, body2, err2 := doRequest(http.MethodPost)
+		if err2 == nil {
+			resp, body = resp2, body2
+		}
+	}
+
+	logger.Info("Platform generate-token response status: %d, body: %s", resp.StatusCode, string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Error("Platform generate-token failed with status %d: %s", resp.StatusCode, string(body))
+		api.WriteError(w, -1, fmt.Sprintf("Platform returned status %d", resp.StatusCode))
+		return
+	}
+
+	var platformResp map[string]interface{}
+	if err := json.Unmarshal(body, &platformResp); err != nil {
+		logger.Error("Failed to parse platform response: %v", err)
+		api.WriteError(w, -1, "Invalid platform response")
+		return
+	}
+
+	api.WriteSuccess(w, platformResp)
 }

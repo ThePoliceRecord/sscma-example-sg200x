@@ -93,14 +93,10 @@ func (h *UserHandler) QueryUserInfo(w http.ResponseWriter, r *http.Request) {
 	sshKeys := getSSHKeys(username)
 	logger.Info("[SSH DEBUG] Retrieved %d SSH keys for user %s", len(sshKeys), username)
 
-	// Disabled firstLogin tracking - always return false
-	firstLogin := false
-
 	api.WriteSuccess(w, map[string]interface{}{
 		"userName":   username,
-		"firstLogin": firstLogin,
 		"sshEnabled": sshEnabled,
-		"sshkeyList": sshKeys, // Changed from "sshKeys" to "sshkeyList" to match frontend
+		"sshkeyList": sshKeys,
 	})
 }
 
@@ -111,8 +107,7 @@ type UpdatePasswordRequest struct {
 }
 
 // UpdatePassword handles password updates.
-// This endpoint allows unauthenticated access ONLY during first login.
-// After first login, authentication is required.
+// This endpoint requires authentication.
 func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.WriteError(w, -1, "Method not allowed")
@@ -120,24 +115,6 @@ func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := auth.GetUsernameFromRequest(r)
-
-	// Check if this is first login - only allow unauthenticated access for first login
-	if !isFirstLogin(username) {
-		// Not first login - require authentication
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			w.WriteHeader(http.StatusUnauthorized)
-			api.WriteError(w, -1, "Authentication required")
-			return
-		}
-		// Validate the token
-		_, err := h.authManager.ValidateToken(authHeader)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			api.WriteError(w, -1, "Invalid or expired token")
-			return
-		}
-	}
 
 	var req UpdatePasswordRequest
 	if err := api.ParseJSONBody(r, &req); err != nil {
@@ -173,9 +150,6 @@ func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, -1, "Failed to update password")
 		return
 	}
-
-	// Clear the first login flag after successful password change
-	clearFirstLoginFlag()
 
 	logger.Info("Password updated for user %s", username)
 	api.WriteSuccess(w, map[string]interface{}{"message": "Password updated successfully"})
@@ -533,49 +507,6 @@ func isValidSSHKey(key string) bool {
 	return false
 }
 
-// isFirstLogin checks if the user needs to set a password.
-// Returns true if the password is default or the first login flag is set.
-func isFirstLogin(username string) bool {
-	// Check first login flag file
-	firstLoginFile := "/etc/recamera.conf/first_login"
-	if _, err := os.Stat(firstLoginFile); err == nil {
-		// First login flag exists
-		data, _ := os.ReadFile(firstLoginFile)
-		if string(data) == "1" || strings.TrimSpace(string(data)) == "true" {
-			return true
-		}
-	}
-
-	// Check if user has a valid password in /etc/shadow
-	// If password field is empty, !, *, or !!, then first login is true
-	shadowFile, err := os.Open("/etc/shadow")
-	if err != nil {
-		// Can't read shadow, assume not first login
-		return false
-	}
-	defer shadowFile.Close()
-
-	scanner := bufio.NewScanner(shadowFile)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Split(line, ":")
-		if len(parts) >= 2 && parts[0] == username {
-			passwd := parts[1]
-			// Check if password is locked or empty
-			if passwd == "" || passwd == "*" || passwd == "!" || passwd == "!!" || passwd == "!*" {
-				return true
-			}
-			// Check for default password "recamera" - verify using crypt
-			if verifyDefaultPassword(passwd) {
-				return true
-			}
-			return false
-		}
-	}
-
-	return false
-}
-
 func isValidUsername(username string) bool {
 	if username == "" || len(username) > 32 {
 		return false
@@ -603,23 +534,6 @@ func isValidUsername(username string) bool {
 		}
 	}
 	return true
-}
-
-// verifyDefaultPassword checks if the password hash matches the default password "recamera"
-func verifyDefaultPassword(hashedPassword string) bool {
-	// Use the GehirnInc/crypt library to verify if the hash matches "recamera"
-	crypter := crypt.NewFromHash(hashedPassword)
-	if crypter == nil {
-		return false
-	}
-	err := crypter.Verify(hashedPassword, []byte("recamera"))
-	return err == nil
-}
-
-// clearFirstLoginFlag removes the first login flag file
-func clearFirstLoginFlag() {
-	firstLoginFile := "/etc/recamera.conf/first_login"
-	os.Remove(firstLoginFile)
 }
 
 // min returns the minimum of two integers

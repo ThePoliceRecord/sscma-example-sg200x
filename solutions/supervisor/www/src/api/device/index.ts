@@ -97,6 +97,7 @@ export interface UploadedUpdatePackageInfo {
   osName?: string;
   version?: string;
   size?: number;
+  packageType?: "ota_zip" | "swu" | "upgrade_zip" | string;
 }
 
 export const uploadUpdatePackageApi = async (data: FormData, onProgress?: (percent: number) => void) =>
@@ -106,6 +107,7 @@ export const uploadUpdatePackageApi = async (data: FormData, onProgress?: (perce
     size: number;
     osName: string;
     version: string;
+    packageType?: "ota_zip" | "swu" | "upgrade_zip" | string;
   }>({
     url: "api/deviceMgr/uploadUpdatePackage",
     method: "post",
@@ -181,7 +183,7 @@ export const getUpdateCheckProgressApi = async () =>
 
 // 获取模型信息
 export const getModelInfoApi = async () =>
-  supervisorRequest<IDeviceInfo>(
+  supervisorRequest<Record<string, unknown>>(
     {
       url: "api/deviceMgr/getModelInfo",
       method: "get",

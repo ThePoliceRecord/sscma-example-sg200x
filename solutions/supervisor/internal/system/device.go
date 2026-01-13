@@ -3,17 +3,19 @@ package system
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // File paths for device information
 const (
-	IssueFile    = "/etc/issue"
-	HostnameFile = "/etc/hostname"
-	UptimeFile   = "/proc/uptime"
-	CPUInfoFile  = "/proc/cpuinfo"
-	MemInfoFile  = "/proc/meminfo"
+	IssueFile      = "/etc/issue"
+	HostnameFile   = "/etc/hostname"
+	DeviceNameFile = "/etc/recamera.conf/device_name"
+	UptimeFile     = "/proc/uptime"
+	CPUInfoFile    = "/proc/cpuinfo"
+	MemInfoFile    = "/proc/meminfo"
 )
 
 // GetCPUModel returns the CPU model from /proc/cpuinfo or fw_printenv.
@@ -112,6 +114,14 @@ func GetSerialNumber() string {
 
 // GetDeviceName returns the device hostname.
 func GetDeviceName() string {
+	// Prefer the persisted device-name file written by the boot identity script.
+	// This avoids getting reset on reboot when /etc/hostname is regenerated.
+	if data, err := os.ReadFile(DeviceNameFile); err == nil {
+		if name := strings.TrimSpace(string(data)); name != "" {
+			return name
+		}
+	}
+
 	data, err := os.ReadFile(HostnameFile)
 	if err != nil {
 		return ""
@@ -221,6 +231,11 @@ func DetectSensor() int {
 
 // SetDeviceName updates the device hostname and restarts avahi.
 func SetDeviceName(name string) error {
+	// Persist for the boot identity script (so it survives reboot).
+	if err := os.MkdirAll(filepath.Dir(DeviceNameFile), 0755); err == nil {
+		_ = os.WriteFile(DeviceNameFile, []byte(name+"\n"), 0644)
+	}
+
 	// Write to hostname file
 	if err := os.WriteFile(HostnameFile, []byte(name+"\n"), 0644); err != nil {
 		return err

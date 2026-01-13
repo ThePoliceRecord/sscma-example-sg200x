@@ -10,7 +10,6 @@
 /*.so
 /*.dylib
 /supervisor
-/supervisor-*
 
 # Test files
 *.test

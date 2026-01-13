@@ -17,10 +17,10 @@ Most API endpoints require authentication via JWT token, except for the followin
 - `/api/version` - Get version and uptime
 - `/api/channels` - Get video channel information
 - `/api/userMgr/login` - User login
-- `/api/userMgr/queryUserInfo` - Query user info (needed for first login check)
-- `/api/userMgr/updatePassword` - Update password (needed for first login)
 - `/api/deviceMgr/queryDeviceInfo` - Query device info (gets serial number)
 - `/api/deviceMgr/queryServiceStatus` - Query service status
+- `/api/deviceMgr/oauthCallback` - OAuth callback handler
+- `/api/deviceMgr/generateCameraToken` - Generate camera token (OOBE only)
 
 ### Authentication Flow
 
@@ -37,9 +37,7 @@ Most API endpoints require authentication via JWT token, except for the followin
      "code": 0,
      "msg": "success",
      "data": {
-       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-       "username": "admin",
-       "firstLogin": false
+       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
      }
    }
    ```
@@ -82,7 +80,7 @@ GET /api/version
 ```
 GET /api/userMgr/queryUserInfo
 ```
-**Auth Required**: No (needed for first login check)
+**Auth Required**: Yes
 
 **Response**:
 ```json
@@ -90,25 +88,25 @@ GET /api/userMgr/queryUserInfo
   "code": 0,
   "msg": "success",
   "data": {
-    "username": "admin",
-    "firstLogin": true,
-    "sshEnabled": false
+    "userName": "recamera",
+    "sshEnabled": false,
+    "sshkeyList": []
   }
 }
 ```
 
-**Use Case**: Check if this is the first login to prompt for password change.
+**Use Case**: Get user information including SSH status and keys.
 
 #### Update Password
 ```
 POST /api/userMgr/updatePassword
 ```
-**Auth Required**: No (for first login) or Yes (for subsequent changes)
+**Auth Required**: Yes
 
 **Request**:
 ```json
 {
-  "oldPassword": "default",
+  "oldPassword": "currentPassword",
   "newPassword": "newSecurePassword123"
 }
 ```
@@ -118,11 +116,13 @@ POST /api/userMgr/updatePassword
 {
   "code": 0,
   "msg": "success",
-  "data": null
+  "data": {
+    "message": "Password updated successfully"
+  }
 }
 ```
 
-**Use Case**: Set initial password during OOBE or change password later.
+**Use Case**: Change user password (requires authentication).
 
 #### Set SSH Status
 ```
@@ -829,27 +829,17 @@ Here's a recommended sequence of API calls for a complete OOBE experience:
 // Check if supervisor is running
 GET /api/version
 
-// Check if this is first login
-GET /api/userMgr/queryUserInfo
-
 // Get device serial number for display
 GET /api/deviceMgr/queryDeviceInfo
 ```
 
-### 2. First Login & Password Setup
+### 2. User Login
 ```javascript
-// If firstLogin is true, prompt for new password
-POST /api/userMgr/updatePassword
-{
-  "oldPassword": "default",
-  "newPassword": "userChosenPassword"
-}
-
-// Then login with new password
+// Login with default or configured credentials
 POST /api/userMgr/login
 {
-  "username": "admin",
-  "password": "userChosenPassword"
+  "userName": "recamera",
+  "password": "recamera"
 }
 // Save the returned token for subsequent requests
 ```
@@ -1003,21 +993,10 @@ async function callSupervisorAPI(endpoint, method = 'GET', body = null) {
 
 // Example usage
 async function setupDevice() {
-  // Check first login
-  const userInfo = await callSupervisorAPI('/api/userMgr/queryUserInfo');
-  
-  if (userInfo.firstLogin) {
-    // Prompt user for new password
-    await callSupervisorAPI('/api/userMgr/updatePassword', 'POST', {
-      oldPassword: 'default',
-      newPassword: 'newPassword123'
-    });
-  }
-  
   // Login
   const loginData = await callSupervisorAPI('/api/userMgr/login', 'POST', {
-    username: 'admin',
-    password: 'newPassword123'
+    userName: 'recamera',
+    password: 'recamera'
   });
   
   // Save token

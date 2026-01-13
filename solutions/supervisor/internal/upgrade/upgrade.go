@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"supervisor/internal/system"
 	"supervisor/pkg/logger"
 )
 
@@ -31,6 +32,9 @@ const (
 	OfficialURL      = "https://github.com/ThePoliceRecord/authority-alert-OS/releases/latest"
 	ChecksumFileName = "sg2002_recamera_emmc_sha256sum.txt"
 	URLFileName      = "url.txt"
+	// UploadedPackageMetaFileName stores metadata about the last uploaded update package.
+	// Stored in UpgradeFilesDir.
+	UploadedPackageMetaFileName = "uploaded_package.json"
 
 	DefaultUpgradeURL = "https://github.com/ThePoliceRecord/authority-alert-OS/releases/latest"
 )
@@ -100,15 +104,28 @@ type VersionInfo struct {
 	Version  string
 }
 
+// UploadedPackageType identifies the kind of locally uploaded update payload.
+//
+// These are intentionally stringly-typed because they cross the API boundary
+// to the web UI.
+type UploadedPackageType string
+
+const (
+	UploadedPackageTypeOTAZip     UploadedPackageType = "ota_zip"
+	UploadedPackageTypeSWU        UploadedPackageType = "swu"
+	UploadedPackageTypeUpgradeZip UploadedPackageType = "upgrade_zip"
+)
+
 // StagedPackageInfo describes an OTA package that has been uploaded to the device
 // and staged for installation.
 type StagedPackageInfo struct {
-	Exists   bool   `json:"exists"`
-	FileName string `json:"fileName"`
-	Checksum string `json:"checksum"`
-	OSName   string `json:"osName"`
-	Version  string `json:"version"`
-	Size     int64  `json:"size"`
+	Exists      bool                `json:"exists"`
+	FileName    string              `json:"fileName"`
+	Checksum    string              `json:"checksum"`
+	OSName      string              `json:"osName"`
+	Version     string              `json:"version"`
+	Size        int64               `json:"size"`
+	PackageType UploadedPackageType `json:"packageType,omitempty"`
 }
 
 // UpgradeManager handles system upgrades.
@@ -131,8 +148,49 @@ func NewUpgradeManager() *UpgradeManager {
 	return &UpgradeManager{}
 }
 
+func uploadedPackageMetaPath() string {
+	return filepath.Join(UpgradeFilesDir, UploadedPackageMetaFileName)
+}
+
+// SaveUploadedPackageInfo persists the uploaded package metadata used by the UI.
+func SaveUploadedPackageInfo(info *StagedPackageInfo) error {
+	if info == nil {
+		return fmt.Errorf("nil uploaded package info")
+	}
+	data, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(uploadedPackageMetaPath(), data, 0644)
+}
+
+func loadUploadedPackageInfo() (*StagedPackageInfo, error) {
+	data, err := os.ReadFile(uploadedPackageMetaPath())
+	if err != nil {
+		return nil, err
+	}
+	var info StagedPackageInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // GetStagedLocalPackageInfo returns metadata about an uploaded OTA package, if present.
 func (m *UpgradeManager) GetStagedLocalPackageInfo() (*StagedPackageInfo, error) {
+	if meta, err := loadUploadedPackageInfo(); err == nil && meta != nil && meta.Exists && meta.FileName != "" {
+		p := filepath.Join(UpgradeTmpDir, meta.FileName)
+		st, statErr := os.Stat(p)
+		if statErr != nil {
+			return &StagedPackageInfo{Exists: false}, nil
+		}
+		meta.Size = st.Size()
+		if meta.PackageType == "" {
+			meta.PackageType = UploadedPackageTypeOTAZip
+		}
+		return meta, nil
+	}
+
 	checksumPath := filepath.Join(UpgradeFilesDir, ChecksumFileName)
 	info, err := m.parseVersionInfo(checksumPath)
 	if err != nil {
@@ -146,13 +204,226 @@ func (m *UpgradeManager) GetStagedLocalPackageInfo() (*StagedPackageInfo, error)
 	}
 
 	return &StagedPackageInfo{
-		Exists:   true,
-		FileName: info.FileName,
-		Checksum: info.Checksum,
-		OSName:   info.OSName,
-		Version:  info.Version,
-		Size:     st.Size(),
+		Exists:      true,
+		FileName:    info.FileName,
+		Checksum:    info.Checksum,
+		OSName:      info.OSName,
+		Version:     info.Version,
+		Size:        st.Size(),
+		PackageType: UploadedPackageTypeOTAZip,
 	}, nil
+}
+
+// UpdateSystemFromUploadedPackage starts an update using the currently staged uploaded package.
+//
+// This supports multiple package types (OTA zip, SWUpdate .swu, and upgrade/emmc zip).
+func (m *UpgradeManager) UpdateSystemFromUploadedPackage() error {
+	if m.IsUpgrading() {
+		return fmt.Errorf("upgrade in progress")
+	}
+	info, err := m.GetStagedLocalPackageInfo()
+	if err != nil {
+		return err
+	}
+	if info == nil || !info.Exists || info.FileName == "" {
+		return fmt.Errorf("no staged update package")
+	}
+
+	path := filepath.Join(UpgradeTmpDir, info.FileName)
+	if _, statErr := os.Stat(path); statErr != nil {
+		return fmt.Errorf("staged package not found")
+	}
+
+	os.Remove(UpgradeCancelFile)
+	os.Remove(UpgradeDoneFile)
+	os.Remove(UpgradeProgFile)
+
+	m.cancelled = false
+
+	switch info.PackageType {
+	case "", UploadedPackageTypeOTAZip:
+		return m.UpdateSystemFromLocal()
+	case UploadedPackageTypeSWU:
+		go m.performSWUUpgrade(path)
+		return nil
+	case UploadedPackageTypeUpgradeZip:
+		go m.performUpgradeFromUpgradeZip(path)
+		return nil
+	default:
+		return fmt.Errorf("unsupported package type: %s", info.PackageType)
+	}
+}
+
+func (m *UpgradeManager) performSWUUpgrade(swuPath string) {
+	m.mu.Lock()
+	m.downloading = false
+	m.upgrading = true
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.downloading = false
+		m.upgrading = false
+		m.mu.Unlock()
+	}()
+
+	m.updateProgress(0, "swupdate: starting")
+
+	// Select the correct image set based on the currently running slot.
+	//
+	// Our generated sw-description defines two sets:
+	// - stable:a_write_b (write /dev/mmcblk0p4, set use_part_b=1)
+	// - stable:b_write_a (write /dev/mmcblk0p3, set use_part_b=0)
+	selection := "stable,a_write_b"
+	if m.isRootFSB() {
+		selection = "stable,b_write_a"
+	}
+
+	// Run swupdate directly (no daemon required). Use verbose mode to improve diagnosability.
+	cmd := exec.Command("swupdate", "-v", "-i", swuPath, "-e", selection)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		logger.Error("SWUpdate failed: %v, output: %s", err, msg)
+		m.updateProgress(0, "failed: "+truncateStatusError(fmt.Errorf("%v: %s", err, msg)))
+		return
+	}
+
+	_ = os.Remove(swuPath)
+	os.WriteFile(UpgradeDoneFile, []byte("1"), 0644)
+	m.updateProgress(100, "upgrade: rebooting")
+	m.scheduleReboot()
+}
+
+func (m *UpgradeManager) performUpgradeFromUpgradeZip(zipPath string) {
+	m.mu.Lock()
+	m.downloading = false
+	m.upgrading = true
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.downloading = false
+		m.upgrading = false
+		m.mu.Unlock()
+	}()
+
+	m.updateProgress(0, "upgrade_zip: preparing")
+
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		logger.Error("Failed to open upgrade zip: %v", err)
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
+		return
+	}
+	defer zr.Close()
+
+	find := func(name string) *zip.File {
+		for _, f := range zr.File {
+			// Some build pipelines may zip with a directory prefix; match by basename.
+			if f.Name == name || filepath.Base(f.Name) == name {
+				return f
+			}
+		}
+		return nil
+	}
+
+	targetRootFS := RootFSB
+	if m.isRootFSB() {
+		targetRootFS = RootFS
+	}
+
+	// Rootfs is required
+	rootfs := find("rootfs_ext4.emmc")
+	if rootfs == nil {
+		err := fmt.Errorf("rootfs_ext4.emmc not found in package")
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
+		return
+	}
+	// Safety: only write the inactive rootfs slot.
+	// We intentionally do NOT write boot.emmc / fip.bin here; those are recovery-style artifacts and
+	// updating bootloader/boot partitions from a running system is high-risk.
+	if err := m.updatePartitionFromZipNoVerify(rootfs, targetRootFS, false, 10, 90, "upgrade_zip: writing rootfs"); err != nil {
+		logger.Error("upgrade_zip: rootfs update failed: %v", err)
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
+		return
+	}
+
+	m.updateProgress(90, "upgrade_zip: switching slot")
+	if err := m.switchPartition(); err != nil {
+		m.updateProgress(0, "failed: "+truncateStatusError(err))
+		return
+	}
+
+	_ = os.Remove(zipPath)
+	os.WriteFile(UpgradeDoneFile, []byte("1"), 0644)
+	m.updateProgress(100, "upgrade: rebooting")
+	m.scheduleReboot()
+}
+
+// updatePartitionFromZipNoVerify streams a zip entry directly into a block device without requiring a checksum file.
+func (m *UpgradeManager) updatePartitionFromZipNoVerify(zipFile *zip.File, partition string, isFIP bool, progressStart, progressEnd int, status string) error {
+	if zipFile == nil {
+		return fmt.Errorf("nil zip entry")
+	}
+
+	if isFIP {
+		_ = os.WriteFile(ForceROPath, []byte("0"), 0644)
+		defer os.WriteFile(ForceROPath, []byte("1"), 0644)
+	}
+
+	rc, err := zipFile.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	part, err := os.OpenFile(partition, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer part.Close()
+
+	sha := sha256.New()
+	writer := io.MultiWriter(part, sha)
+
+	total := int64(zipFile.UncompressedSize64)
+	var written int64
+	buf := make([]byte, 256*1024)
+	lastUpdate := time.Now()
+	for {
+		if m.cancelled {
+			return fmt.Errorf("cancelled")
+		}
+		n, rerr := rc.Read(buf)
+		if n > 0 {
+			if _, werr := writer.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			written += int64(n)
+			if total > 0 {
+				pct := progressStart + int(float64(written)/float64(total)*float64(progressEnd-progressStart))
+				if time.Since(lastUpdate) > 250*time.Millisecond {
+					m.updateProgress(pct, fmt.Sprintf("%s %s/%s", status, formatMiB(written), formatMiB(total)))
+					lastUpdate = time.Now()
+				}
+			} else if time.Since(lastUpdate) > 500*time.Millisecond {
+				// Some zip entries may not report an uncompressed size; still show activity.
+				m.updateProgress(progressStart, fmt.Sprintf("%s %s", status, formatMiB(written)))
+				lastUpdate = time.Now()
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+
+	m.updateProgress(progressEnd, fmt.Sprintf("%s done", status))
+	logger.Info("Updated %s with %s (%d bytes, sha256=%s)", partition, zipFile.Name, written, hex.EncodeToString(sha.Sum(nil)))
+	return nil
 }
 
 // UpdateSystemFromLocal starts an update using a locally-uploaded (staged) OTA zip.
@@ -170,6 +441,9 @@ func (m *UpgradeManager) UpdateSystemFromLocal() error {
 	}
 	if info == nil || !info.Exists {
 		return fmt.Errorf("no staged OTA package")
+	}
+	if info.PackageType != "" && info.PackageType != UploadedPackageTypeOTAZip {
+		return fmt.Errorf("staged package is not an OTA zip")
 	}
 
 	// Clear state files
@@ -1069,7 +1343,8 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 	// Find file in zip
 	var zipFile *zip.File
 	for _, f := range zipReader.File {
-		if f.Name == filename {
+		// Some build pipelines may zip with a directory prefix; match by basename.
+		if f.Name == filename || filepath.Base(f.Name) == filename {
 			zipFile = f
 			break
 		}
@@ -1085,7 +1360,7 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 
 	// For FIP partition, we need to disable write protection
 	if isFIP {
-		os.WriteFile(ForceROPath, []byte("0"), 0644)
+		_ = os.WriteFile(ForceROPath, []byte("0"), 0644)
 		defer os.WriteFile(ForceROPath, []byte("1"), 0644)
 	}
 
@@ -1123,12 +1398,15 @@ func (m *UpgradeManager) updatePartition(zipReader *zip.ReadCloser, partition, f
 			}
 			written += int64(n)
 
-			if total > 0 {
-				pct := progressStart + int(float64(written)/float64(total)*float64(progressEnd-progressStart))
-				if time.Since(lastUpdate) > 250*time.Millisecond {
+			if time.Since(lastUpdate) > 250*time.Millisecond {
+				if total > 0 {
+					pct := progressStart + int(float64(written)/float64(total)*float64(progressEnd-progressStart))
 					m.updateProgress(pct, fmt.Sprintf("%s %s/%s", status, formatMiB(written), formatMiB(total)))
-					lastUpdate = time.Now()
+				} else {
+					// Unknown size; still show activity.
+					m.updateProgress(progressStart, fmt.Sprintf("%s %s", status, formatMiB(written)))
 				}
+				lastUpdate = time.Now()
 			}
 		}
 		if rerr == io.EOF {
@@ -1191,22 +1469,14 @@ func (m *UpgradeManager) scheduleReboot() {
 	//
 	// Small delay to ensure the progress file write is flushed.
 	time.Sleep(2 * time.Second)
-	_ = exec.Command("sync").Run()
 
-	candidates := []string{
-		"/sbin/reboot",
-		"/bin/reboot",
-		"reboot",
+	if err := system.Reboot(); err == nil {
+		return
+	} else {
+		// If we get here, reboot failed; leave the done marker so the UI can show it needs restart.
+		m.updateProgress(100, "upgrade: reboot failed (manual reboot required)")
+		logger.Error("Failed to reboot after upgrade; manual reboot required: %v", err)
 	}
-	for _, c := range candidates {
-		if err := exec.Command(c).Run(); err == nil {
-			return
-		}
-	}
-
-	// If we get here, reboot failed; leave the done marker so the UI can show it needs restart.
-	m.updateProgress(100, "upgrade: reboot failed (manual reboot required)")
-	logger.Error("Failed to reboot after upgrade; manual reboot required")
 }
 
 // updateProgress updates the progress file.

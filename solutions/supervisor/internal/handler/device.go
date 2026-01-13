@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -201,14 +202,14 @@ func (h *DeviceHandler) SetPower(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cmd string
+	action := ""
 	switch req.Mode {
 	case 0:
-		cmd = "poweroff"
+		action = "poweroff"
 	case 1:
-		cmd = "reboot"
+		action = "reboot"
 	case 2:
-		cmd = "suspend"
+		action = "suspend"
 	default:
 		api.WriteError(w, -1, "Invalid power mode")
 		return
@@ -218,10 +219,21 @@ func (h *DeviceHandler) SetPower(w http.ResponseWriter, r *http.Request) {
 	api.WriteSuccess(w, map[string]interface{}{"mode": req.Mode})
 
 	// Execute power command in background
-	go func() {
+	go func(mode int, action string) {
 		time.Sleep(1 * time.Second)
-		exec.Command(cmd).Run()
-	}()
+		var err error
+		switch mode {
+		case 0:
+			err = system.Poweroff()
+		case 1:
+			err = system.Reboot()
+		case 2:
+			err = system.Suspend()
+		}
+		if err != nil {
+			logger.Error("SetPower: %s failed: %v", action, err)
+		}
+	}(req.Mode, action)
 }
 
 // GetModelList returns the list of available models.
@@ -268,8 +280,16 @@ func (h *DeviceHandler) GetModelInfo(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, -1, "Failed to get model info")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+
+	// The web UI expects the standard supervisor API envelope {code,msg,data}.
+	// model.json contents vary by build, so decode to an interface{} and fall back to raw text.
+	var parsed interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		api.WriteSuccess(w, map[string]interface{}{"raw": string(data)})
+		return
+	}
+
+	api.WriteSuccess(w, parsed)
 }
 
 // GetModelFile serves a model file for download.
@@ -367,8 +387,10 @@ func (h *DeviceHandler) UploadModel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UploadUpdatePackage handles OTA zip uploads to stage a custom OS update.
-// The uploaded file must be an "*_ota.zip" (ends with "ota.zip").
+// Supported upload types:
+// - *_ota.zip (A/B OTA zip)
+// - *.swu or *_swu.zip (SWUpdate bundle)
+// - *_emmc.zip or upgrade.zip (upgrade zip containing fip.bin/boot.emmc/rootfs_ext4.emmc)
 func (h *DeviceHandler) UploadUpdatePackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.WriteError(w, -1, "Method not allowed")
@@ -377,6 +399,15 @@ func (h *DeviceHandler) UploadUpdatePackage(w http.ResponseWriter, r *http.Reque
 
 	if h.upgradeMgr.IsUpgrading() {
 		api.WriteError(w, -1, "Update already in progress")
+		return
+	}
+
+	parseOSAndVersion := func(name string) (osName, version string) {
+		parts := strings.Split(name, "_")
+		if len(parts) >= 3 {
+			osName = parts[1]
+			version = parts[2]
+		}
 		return
 	}
 
@@ -418,9 +449,20 @@ func (h *DeviceHandler) UploadUpdatePackage(w http.ResponseWriter, r *http.Reque
 	defer part.Close()
 
 	filename := filepath.Base(part.FileName())
-	// Require the standard naming so the upgrader can parse version metadata.
-	if !(strings.HasSuffix(filename, "ota.zip") && strings.HasSuffix(filename, ".zip")) {
-		api.WriteError(w, -1, "Invalid update package type. Expected an *_ota.zip")
+	var pkgType upgrade.UploadedPackageType
+	isSWUZip := false
+	switch {
+	case strings.HasSuffix(filename, "ota.zip") && strings.HasSuffix(filename, ".zip"):
+		pkgType = upgrade.UploadedPackageTypeOTAZip
+	case strings.HasSuffix(filename, ".swu"):
+		pkgType = upgrade.UploadedPackageTypeSWU
+	case strings.HasSuffix(filename, "_swu.zip"):
+		pkgType = upgrade.UploadedPackageTypeSWU
+		isSWUZip = true
+	case filename == "upgrade.zip" || strings.HasSuffix(filename, "_emmc.zip"):
+		pkgType = upgrade.UploadedPackageTypeUpgradeZip
+	default:
+		api.WriteError(w, -1, "Invalid update package. Expected *_ota.zip, *.swu, *_swu.zip, *_emmc.zip, or upgrade.zip")
 		return
 	}
 
@@ -467,34 +509,107 @@ func (h *DeviceHandler) UploadUpdatePackage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Write manifest file used by the upgrader.
-	manifestLine := fmt.Sprintf("%s  %s\n", checksum, filename)
-	manifestPath := filepath.Join(upgrade.UpgradeFilesDir, upgrade.ChecksumFileName)
-	if err := os.WriteFile(manifestPath, []byte(manifestLine), 0644); err != nil {
-		logger.Error("Failed to write OTA manifest: %v", err)
-		api.WriteError(w, -1, "Failed to stage update package")
-		return
+	storedFileName := filename
+	storedChecksum := checksum
+	storedSize := written
+
+	// If the user uploaded *_swu.zip, extract the contained .swu and stage that instead.
+	if isSWUZip {
+		zr, err := zip.OpenReader(finalPath)
+		if err != nil {
+			api.WriteError(w, -1, "Invalid _swu.zip (failed to open)")
+			return
+		}
+		var swuEntry *zip.File
+		for _, f := range zr.File {
+			if strings.HasSuffix(f.Name, ".swu") {
+				swuEntry = f
+				break
+			}
+		}
+		if swuEntry == nil {
+			_ = zr.Close()
+			api.WriteError(w, -1, "Invalid _swu.zip (no .swu inside)")
+			return
+		}
+		rc, err := swuEntry.Open()
+		if err != nil {
+			_ = zr.Close()
+			api.WriteError(w, -1, "Invalid _swu.zip (failed to read .swu)")
+			return
+		}
+
+		dstName := filepath.Base(swuEntry.Name)
+		tmpOut, err := os.CreateTemp(upgrade.UpgradeTmpDir, "extract-*.partial")
+		if err != nil {
+			_ = rc.Close()
+			_ = zr.Close()
+			api.WriteError(w, -1, "Failed to stage .swu")
+			return
+		}
+		outPath := tmpOut.Name()
+		xh := sha256.New()
+		xWritten, xCopyErr := io.Copy(io.MultiWriter(tmpOut, xh), rc)
+		xCloseErr := tmpOut.Close()
+		_ = rc.Close()
+		_ = zr.Close()
+		if xCopyErr != nil || xCloseErr != nil {
+			_ = os.Remove(outPath)
+			api.WriteError(w, -1, "Failed to extract .swu")
+			return
+		}
+		finalSWUPath := filepath.Join(upgrade.UpgradeTmpDir, dstName)
+		_ = os.Remove(finalSWUPath)
+		if err := os.Rename(outPath, finalSWUPath); err != nil {
+			_ = os.Remove(outPath)
+			api.WriteError(w, -1, "Failed to stage .swu")
+			return
+		}
+		// Remove the original zip to save space.
+		_ = os.Remove(finalPath)
+
+		storedFileName = dstName
+		storedChecksum = hex.EncodeToString(xh.Sum(nil))
+		storedSize = xWritten
 	}
 
-	// Also write version.json so existing update flows can surface the staged update.
-	osName := ""
-	version := ""
-	parts := strings.Split(filename, "_")
-	if len(parts) >= 3 {
-		osName = parts[1]
-		version = parts[2]
+	osName, version := parseOSAndVersion(storedFileName)
+
+	// OTA zip still uses the legacy manifest + version.json so existing OTA flows work.
+	if pkgType == upgrade.UploadedPackageTypeOTAZip {
+		manifestLine := fmt.Sprintf("%s  %s\n", storedChecksum, storedFileName)
+		manifestPath := filepath.Join(upgrade.UpgradeFilesDir, upgrade.ChecksumFileName)
+		if err := os.WriteFile(manifestPath, []byte(manifestLine), 0644); err != nil {
+			logger.Error("Failed to write OTA manifest: %v", err)
+			api.WriteError(w, -1, "Failed to stage update package")
+			return
+		}
+
+		// Also write version.json so existing update flows can surface the staged update.
+		versionFile := filepath.Join(upgrade.UpgradeFilesDir, "version.json")
+		if data, err := json.Marshal(upgrade.UpdateVersion{OSName: osName, OSVersion: version, Status: upgrade.UpdateStatusAvailable}); err == nil {
+			_ = os.WriteFile(versionFile, data, 0644)
+		}
 	}
-	versionFile := filepath.Join(upgrade.UpgradeFilesDir, "version.json")
-	if data, err := json.Marshal(upgrade.UpdateVersion{OSName: osName, OSVersion: version, Status: upgrade.UpdateStatusAvailable}); err == nil {
-		_ = os.WriteFile(versionFile, data, 0644)
-	}
+
+	// Persist uploaded package metadata for the UI and apply path.
+	_ = upgrade.SaveUploadedPackageInfo(&upgrade.StagedPackageInfo{
+		Exists:      true,
+		FileName:    storedFileName,
+		Checksum:    storedChecksum,
+		OSName:      osName,
+		Version:     version,
+		Size:        storedSize,
+		PackageType: pkgType,
+	})
 
 	api.WriteSuccess(w, map[string]interface{}{
-		"fileName": filename,
-		"checksum": checksum,
-		"size":     written,
-		"osName":   osName,
-		"version":  version,
+		"fileName":    storedFileName,
+		"checksum":    storedChecksum,
+		"size":        storedSize,
+		"osName":      osName,
+		"version":     version,
+		"packageType": pkgType,
 	})
 }
 
@@ -515,7 +630,7 @@ func (h *DeviceHandler) ApplyUploadedUpdatePackage(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if err := h.upgradeMgr.UpdateSystemFromLocal(); err != nil {
+	if err := h.upgradeMgr.UpdateSystemFromUploadedPackage(); err != nil {
 		api.WriteError(w, -1, err.Error())
 		return
 	}
@@ -1106,7 +1221,7 @@ func (h *DeviceHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 // The supervisor will automatically populate device-specific fields from internal sources.
 // The OAuth access token is passed in the request body (not Authorization header).
 type CameraRegistrationRequest struct {
-	AccessToken  string   `json:"access_token"`  // Auth0 OAuth access token
+	AccessToken  string   `json:"access_token"` // Auth0 OAuth access token
 	LocationName string   `json:"location_name"`
 	Latitude     *float64 `json:"latitude,omitempty"`
 	Longitude    *float64 `json:"longitude,omitempty"`
@@ -1224,9 +1339,9 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 	logger.Info("Step 1: Generating camera API token from platform")
 	tokenURL := platformURL("/api/v1/cameras/generate-token/")
 	logger.Error("Calling platform URL: GET %s", tokenURL)
-	
+
 	client := &http.Client{Timeout: 30 * time.Second}
-	
+
 	// Try GET first (current platform implementation)
 	tokenReq, err := http.NewRequest(http.MethodGet, tokenURL, nil)
 	if err != nil {
@@ -1297,7 +1412,7 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 
 	// Step 2: Collect device information from internal sources
 	deviceInfo := device.QueryDeviceInfo()
-	
+
 	// Get MAC addresses
 	wifiMac := system.GetMAC("wlan0")
 	if wifiMac == "" {
@@ -1312,10 +1427,10 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 	// In production, these should be generated by the platform or retrieved from persistent storage
 	cameraUID := deviceInfo.SN // Use serial number as camera UID for now
 	cameraID := deviceInfo.SN  // Use serial number as camera ID for now
-	
+
 	// Get current timestamp for registration fields
 	now := time.Now().Format(time.RFC3339)
-	
+
 	// Extract user_id from platform token response
 	var userID interface{} = 1 // Default to 1 if not provided
 	if platformUserID != nil {
@@ -1324,22 +1439,22 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 
 	// Build complete registration payload with device info
 	platformPayload := map[string]interface{}{
-		"uid":                   cameraUID,
-		"user_id":               userID,
-		"camera_id":             cameraID,
-		"location_name":         req.LocationName,
-		"serial_number":         deviceInfo.SN,
-		"wifi_mac_address":      wifiMac,
-		"mac_address":           ethMac,
-		"device_model":          deviceInfo.Type,
-		"firmware_version":      deviceInfo.OSVersion,
-		"last_contacted":        now,
-		"installation_date":     now,
-		"creation_date":         now,
-		"last_subscribed":       now,
+		"uid":                     cameraUID,
+		"user_id":                 userID,
+		"camera_id":               cameraID,
+		"location_name":           req.LocationName,
+		"serial_number":           deviceInfo.SN,
+		"wifi_mac_address":        wifiMac,
+		"mac_address":             ethMac,
+		"device_model":            deviceInfo.Type,
+		"firmware_version":        deviceInfo.OSVersion,
+		"last_contacted":          now,
+		"installation_date":       now,
+		"creation_date":           now,
+		"last_subscribed":         now,
 		"notification_target_ids": []int{}, // Empty array by default
 	}
-	
+
 	// Only include latitude/longitude if provided
 	if req.Latitude != nil {
 		platformPayload["latitude"] = *req.Latitude
@@ -1441,7 +1556,7 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 			logger.Warning("No secret_key in platform response, will not be able to authenticate future requests")
 		}
 	}
-	
+
 	// Use response UID if provided, otherwise use the one we sent
 	finalUID := responseUID
 	if finalUID == "" {
@@ -1452,9 +1567,9 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 	// IMPORTANT: Save the secret_key from self-register, NOT the temporary api_key from generate-token
 	registrationData := map[string]interface{}{
 		"platform_url":  platformBaseURL(),
-		"secret_key":    secretKey,  // Use secret_key from self-register response
+		"secret_key":    secretKey, // Use secret_key from self-register response
 		"camera_uid":    finalUID,
-		"user_id":       platformUserID,
+		"user_id":       userID,
 		"registered_at": time.Now().Format(time.RFC3339),
 		"camera_data":   dataMap,
 	}
@@ -1472,7 +1587,7 @@ func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
 		"code":    platformResp.Code,
 		"message": platformResp.Message,
 		"uid":     finalUID,
-		"user_id": platformUserID,
+		"user_id": userID,
 		"data":    dataMap,
 	})
 }

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Radio, Select, Button, Input, message, Spin, Progress, Modal } from "antd";
 import { CloudDownloadOutlined, SyncOutlined, CheckCircleOutlined, LinkOutlined, UploadOutlined, CloseCircleOutlined } from "@ant-design/icons";
 import type { RadioChangeEvent } from "antd";
+import React from "react";
 import { 
   queryDeviceInfoApi,
   getUpdateConfigApi,
@@ -111,6 +112,20 @@ const frequencyOptions = [
 function Updates() {
   const [messageApi, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(false);
+
+  const formatPackageType = (t?: string) => {
+    switch ((t || "").toLowerCase()) {
+      case "ota_zip":
+      case "ota":
+        return "ota_zip (A/B)";
+      case "swu":
+        return "swu (SWUpdate)";
+      case "upgrade_zip":
+        return "upgrade_zip";
+      default:
+        return t || "(unknown)";
+    }
+  };
 
   const progressTimerRef = useRef<number | null>(null);
   const progressPollStartedAtRef = useRef<number | null>(null);
@@ -556,11 +571,16 @@ function Updates() {
 
   const handleUploadPackage = async () => {
     if (!selectedPackage) {
-      messageApi.error("Please choose an OTA package file");
+      messageApi.error("Please choose an update package file");
       return;
     }
-    if (!selectedPackage.name.endsWith("ota.zip")) {
-      messageApi.error("Invalid file: expected an *_ota.zip");
+
+    const name = selectedPackage.name;
+    const isOTA = name.endsWith("ota.zip");
+    const isSWU = name.endsWith(".swu") || name.endsWith("_swu.zip");
+    const isUpgradeZip = name === "upgrade.zip" || name.endsWith("_emmc.zip");
+    if (!(isOTA || isSWU || isUpgradeZip)) {
+      messageApi.error("Invalid file: expected *_ota.zip, *_swu.zip, *.swu, *_emmc.zip, or upgrade.zip");
       return;
     }
 
@@ -580,6 +600,7 @@ function Updates() {
         osName: res.data.osName,
         version: res.data.version,
         size: res.data.size,
+        packageType: res.data.packageType,
       });
       setSelectedPackage(null);
     } catch (error) {
@@ -606,7 +627,7 @@ function Updates() {
 
     Modal.confirm({
       title: "Install staged update package?",
-      content: "This will install the uploaded Camera OS update package. The device will need to reboot after the update completes.",
+      content: `This will install the uploaded update package (${formatPackageType(stagedPackage.packageType)}). The device will need to reboot after the update completes.`,
       okText: "Install",
       cancelText: "Cancel",
       centered: true,
@@ -837,15 +858,26 @@ function Updates() {
             Custom Update Package
           </div>
           <div className="p-20" style={translucentCardStyle}>
-            <div className="text-14 font-medium text-platinum mb-8">Upload an OTA package</div>
+            <div className="text-14 font-medium text-platinum mb-8">Upload an update package</div>
             <div className="text-12 text-platinum/60 mb-12">
-              Upload a device OTA zip (must end with <span className="font-mono">*_ota.zip</span>) to install a custom Camera OS update.
+              Supported package types:
+              <ul className="mt-6 mb-0 pl-18">
+                <li>
+                  <span className="font-mono">*_ota.zip</span> (A/B OTA) — recommended for normal upgrades. Keeps the inactive slot as a rollback path.
+                </li>
+                <li>
+                  <span className="font-mono">*.swu</span> or <span className="font-mono">*_swu.zip</span> (SWUpdate) — use if you specifically build and deploy SWUpdate bundles.
+                </li>
+                <li>
+                  <span className="font-mono">*_emmc.zip</span> or <span className="font-mono">upgrade.zip</span> (upgrade zip) — applied here as a rootfs-only A/B slot update. Higher risk than OTA/SWU; use only for troubleshooting.
+                </li>
+              </ul>
             </div>
 
             <div className="flex gap-12 items-center flex-wrap">
               <input
                 type="file"
-                accept=".zip"
+                accept=".zip,.swu"
                 onChange={handleSelectPackageFile}
                 style={{ color: "rgba(255,255,255,0.7)" }}
               />
@@ -874,6 +906,10 @@ function Updates() {
               <div className="text-14 font-medium text-platinum mb-8">Staged Package</div>
               {stagedPackage?.exists ? (
                 <div className="space-y-6 text-12 text-platinum/70">
+                  <div className="flex justify-between gap-12">
+                    <span>Type</span>
+                    <span className="font-mono">{formatPackageType(stagedPackage.packageType)}</span>
+                  </div>
                   <div className="flex justify-between gap-12">
                     <span>File</span>
                     <span className="font-mono truncate">{stagedPackage.fileName}</span>

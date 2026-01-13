@@ -1,6 +1,13 @@
 import { Modal } from "antd";
-import { useState } from "react";
-import { InfoCircleOutlined, FileTextOutlined, SafetyOutlined, HeartOutlined } from "@ant-design/icons";
+import { useEffect, useMemo, useState } from "react";
+import {
+  InfoCircleOutlined,
+  FileTextOutlined,
+  SafetyOutlined,
+  HeartOutlined,
+} from "@ant-design/icons";
+import useConfigStore from "@/store/config";
+import { queryDeviceInfoApi, getModelInfoApi } from "@/api/device/index";
 
 // Translucent card style (matching TPR.css .translucent-card-grey-1)
 const translucentCardStyle = {
@@ -46,12 +53,99 @@ function About() {
   const [licensesModalVisible, setLicensesModalVisible] = useState(false);
   const [privacyModalVisible, setPrivacyModalVisible] = useState(false);
 
+  const { deviceInfo, updateDeviceInfo } = useConfigStore();
+  const [modelVersion, setModelVersion] = useState<string>("");
+
+  useEffect(() => {
+    // Refresh device info when opening About so the page reflects the current system state.
+    const fetchDeviceInfo = async () => {
+      try {
+        const res = await queryDeviceInfoApi();
+        updateDeviceInfo(res.data);
+      } catch {
+        // Non-fatal; About can still render with cached store data.
+      }
+    };
+    fetchDeviceInfo();
+  }, [updateDeviceInfo]);
+
+  useEffect(() => {
+    // Fetch model metadata (model.json). This endpoint used to return raw JSON; backend now returns the standard envelope.
+    (async () => {
+      try {
+        const res = await getModelInfoApi();
+        const info: unknown = res?.data;
+
+        const asString = (v: unknown): string | undefined => {
+          if (typeof v === "string") return v;
+          if (typeof v === "number" || typeof v === "boolean") return String(v);
+          return undefined;
+        };
+
+        const pick = (obj: unknown, keys: string[]): string | undefined => {
+          if (!obj || typeof obj !== "object") return undefined;
+          const rec = obj as Record<string, unknown>;
+          for (const k of keys) {
+            const v = asString(rec[k]);
+            if (v) return v;
+          }
+          return undefined;
+        };
+
+        const rawFallback = (() => {
+          if (!info || typeof info !== "object") return "";
+          const raw = (info as Record<string, unknown>).raw;
+          return typeof raw === "string" ? raw : "";
+        })();
+
+        // Try common fields first; if model.json uses a different schema, fall back to showing a stable identifier.
+        const version =
+          pick(info, [
+            "version",
+            "modelVersion",
+            "model_version",
+            "ver",
+            "sha",
+            "git_sha",
+            "checksum",
+          ]) || rawFallback;
+
+        setModelVersion((version || "").trim());
+      } catch {
+        setModelVersion("");
+      }
+    })();
+  }, []);
+
+  const softwareVersion = useMemo(() => {
+    const osName = (deviceInfo?.osName || "").toString().trim();
+    const osVersion = (deviceInfo?.osVersion || "").toString().trim();
+    if (osName && osVersion) return `${osName} ${osVersion}`;
+    return osVersion || osName || "—";
+  }, [deviceInfo?.osName, deviceInfo?.osVersion]);
+
+  const hardwareModel = useMemo(() => {
+    return (
+      (deviceInfo?.type || "").toString().trim() ||
+      (deviceInfo?.cpu || "").toString().trim() ||
+      "—"
+    );
+  }, [deviceInfo?.type, deviceInfo?.cpu]);
+
+  const serialNumber = useMemo(() => {
+    return (deviceInfo?.sn || "").toString().trim() || "—";
+  }, [deviceInfo?.sn]);
+
+  const modelVersionDisplay = useMemo(() => {
+    return modelVersion || "—";
+  }, [modelVersion]);
+
   return (
     <div className="p-16">
       {/* Page Header */}
       <div className="mb-24">
         <div className="flex items-center gap-12 mb-8">
-          <InfoCircleOutlined style={{ fontSize: 28, color: '#9be564' }} />
+          <InfoCircleOutlined style={{ fontSize: 28, color: "#9be564" }} />
           <h1 className="text-28 font-bold text-platinum m-0">About</h1>
         </div>
         <p className="text-14 text-platinum/60 mt-8">
@@ -67,19 +161,19 @@ function About() {
         <div className="p-20" style={translucentCardStyle}>
           <div className="flex justify-between py-8 border-b border-white/10">
             <span className="text-14 text-platinum/70">Software Version</span>
-            <span className="text-14 text-platinum font-mono">1.2.3</span>
+            <span className="text-14 text-platinum font-mono">{softwareVersion}</span>
           </div>
           <div className="flex justify-between py-8 border-b border-white/10">
             <span className="text-14 text-platinum/70">Model Version</span>
-            <span className="text-14 text-platinum font-mono">2.0.1</span>
+            <span className="text-14 text-platinum font-mono">{modelVersionDisplay}</span>
           </div>
           <div className="flex justify-between py-8 border-b border-white/10">
             <span className="text-14 text-platinum/70">Hardware Model</span>
-            <span className="text-14 text-platinum">Authority Alert S1</span>
+            <span className="text-14 text-platinum">{hardwareModel}</span>
           </div>
           <div className="flex justify-between py-8">
             <span className="text-14 text-platinum/70">Serial Number</span>
-            <span className="text-14 text-platinum font-mono">RC-2024-XXXXX</span>
+            <span className="text-14 text-platinum font-mono">{serialNumber}</span>
           </div>
         </div>
       </div>

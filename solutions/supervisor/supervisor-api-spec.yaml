@@ -693,56 +693,6 @@ components:
           enum: [ota_zip, swu, upgrade_zip]
           example: "ota_zip"
 
-    # Platform Integration Schemas
-    CameraRegistrationRequest:
-      type: object
-      required:
-        - access_token
-        - location_name
-      properties:
-        access_token:
-          type: string
-          description: OAuth access token from Auth0
-        location_name:
-          type: string
-          example: "Front Door Camera"
-        latitude:
-          type: number
-          format: double
-          example: 37.7749
-        longitude:
-          type: number
-          format: double
-          example: -122.4194
-
-    CameraRegistrationResponse:
-      type: object
-      properties:
-        code:
-          type: integer
-          example: 200
-        message:
-          type: string
-          example: "Camera registered successfully"
-        uid:
-          type: string
-          example: "SG200X-ABC123"
-        user_id:
-          type: integer
-          example: 1
-        data:
-          type: object
-          additionalProperties: true
-
-    GenerateCameraTokenRequest:
-      type: object
-      required:
-        - access_token
-      properties:
-        access_token:
-          type: string
-          description: OAuth access token from Auth0
-
     # LED Control Schemas
     LEDInfo:
       type: object
@@ -2325,57 +2275,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # Platform Integration Endpoints
-  /api/deviceMgr/registerCamera:
-    post:
-      tags:
-        - Platform Integration
-      summary: Register camera with platform
-      description: |
-        Register the camera with the Authority Alert platform during OOBE.
-        
-        **Use Cases:**
-        - Initial device setup
-        - Platform onboarding
-        - Cloud integration
-        
-        **Business Logic:**
-        1. Validates OAuth access token
-        2. Calls platform generate-token endpoint
-        3. Collects device information (SN, MAC, etc.)
-        4. Calls platform self-register endpoint
-        5. Saves platform credentials locally
-        
-        **Workflow Dependencies:**
-        - Requires OAuth authentication via Auth0
-        - Must be called during OOBE flow
-        - Saves secret_key for future API calls
-      operationId: registerCamera
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CameraRegistrationRequest'
-      responses:
-        '200':
-          description: Camera registered successfully
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/CameraRegistrationResponse'
-        '400':
-          description: Invalid request or registration failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
   /api/deviceMgr/reRegisterCamera:
     post:
       tags:
@@ -2407,92 +2306,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  /api/deviceMgr/generateCameraToken:
-    post:
-      tags:
-        - Platform Integration
-      summary: Generate camera API token
-      description: |
-        Proxy endpoint to generate camera API token from platform.
-        
-        **Use Cases:**
-        - OOBE token generation
-        - Avoid CORS issues
-        - Platform authentication
-        
-        **Note:** This endpoint proxies to the platform API to avoid CORS issues
-        when calling from the browser during OOBE.
-      operationId: generateCameraToken
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GenerateCameraTokenRequest'
-      responses:
-        '200':
-          description: Token generated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse'
-        '400':
-          description: Token generation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /api/deviceMgr/oauthCallback:
-    get:
-      tags:
-        - Platform Integration
-      summary: OAuth callback handler
-      description: |
-        Handle OAuth callback redirect from Auth0.
-        
-        **Use Cases:**
-        - OAuth flow completion
-        - OOBE authentication
-        - Token exchange
-        
-        **Business Logic:**
-        - Receives code and state from Auth0
-        - Redirects to OOBE page with parameters
-        - OOBE JavaScript handles token exchange
-      operationId: oauthCallback
-      security: []
-      parameters:
-        - name: code
-          in: query
-          schema:
-            type: string
-          description: OAuth authorization code
-        - name: state
-          in: query
-          schema:
-            type: string
-          description: OAuth state parameter
-        - name: error
-          in: query
-          schema:
-            type: string
-          description: OAuth error code
-        - name: error_description
-          in: query
-          schema:
-            type: string
-          description: OAuth error description
-      responses:
-        '302':
-          description: Redirect to OOBE page
-          headers:
-            Location:
-              schema:
-                type: string
-                example: "/oobe/index.html?code=...&state=..."
 
   # LED Control Endpoints
   /api/ledMgr/getLEDs:
@@ -3204,6 +3017,53 @@ paths:
                             type: string
                           osVersion:
                             type: string
+
+  /api/deviceMgr/getInternetStatus:
+    get:
+      tags:
+        - System
+      summary: Check internet connectivity
+      description: |
+        Check if the device has internet access by testing connectivity to reliable endpoints.
+
+        **Use Cases:**
+        - Network troubleshooting
+        - OOBE connectivity verification
+        - Dashboard status display
+
+        **Business Logic:**
+        - Tests multiple endpoints (Google, Cloudflare) for reliability
+        - Returns latency measurement on success
+        - 5 second timeout per endpoint
+      operationId: getInternetStatus
+      responses:
+        '200':
+          description: Internet status retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          available:
+                            type: boolean
+                            description: Whether internet access is available
+                            example: true
+                          latency_ms:
+                            type: integer
+                            description: Round-trip latency in milliseconds
+                            example: 45
+                          checked_host:
+                            type: string
+                            description: The endpoint used for the check
+                            example: "https://clients3.google.com/generate_204"
+                          error:
+                            type: string
+                            description: Error message if check failed
 
   /api/deviceMgr/getDeviceList:
     get:

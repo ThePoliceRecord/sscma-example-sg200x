@@ -1,7 +1,7 @@
 import CommonPopup from "@/components/common-popup";
-import { Button, Form, Input, Switch, Empty } from "antd";
+import { Button, Form, Input, Switch, Empty, Alert } from "antd";
 import KeyImg from "@/assets/images/svg/key.svg";
-import { DeleteOutlined, UserOutlined, LockOutlined, SafetyCertificateOutlined, KeyOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, UserOutlined, LockOutlined, SafetyCertificateOutlined, KeyOutlined, PlusOutlined, CloseOutlined, WifiOutlined, SyncOutlined } from "@ant-design/icons";
 import { useData, IFormTypeEnum } from "./hook";
 import moment from "moment";
 import {
@@ -9,6 +9,7 @@ import {
   publicKeyValidate,
   passwordRules,
 } from "@/utils/validate";
+import { useEffect, useState } from "react";
 
 const titleObj = {
   [IFormTypeEnum.Key]: "Add new SSH Key",
@@ -39,11 +40,43 @@ const Security = () => {
     onAddSshFinish,
     onDeleteFinish,
     setSShStatus,
+    cancelCodeRegistration,
   } = useData();
 
   const handleSShStatusChange = (checked: boolean) => {
     setSShStatus(checked);
   };
+
+  // Calculate countdown for code expiry
+  const [countdown, setCountdown] = useState<string>('');
+  useEffect(() => {
+    if (!state.codeRegStatus?.expires_at) {
+      setCountdown('');
+      return;
+    }
+
+    const updateCountdown = () => {
+      const expiresAt = new Date(state.codeRegStatus!.expires_at!);
+      const now = new Date();
+      const remaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
+
+      if (remaining <= 0) {
+        setCountdown('Expired');
+        return;
+      }
+
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
+      setCountdown(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [state.codeRegStatus?.expires_at]);
+
+  // Check if we have an active registration
+  const hasActiveRegistration = state.codeRegStatus?.status === 'active' || state.codeRegStatus?.status === 'generating';
 
   return (
     <div className="p-16">
@@ -57,6 +90,74 @@ const Security = () => {
           Manage your account credentials and SSH access
         </p>
       </div>
+
+      {/* Pending Registration Card */}
+      {hasActiveRegistration && (
+        <div className="mb-24">
+          <div className="p-20" style={{
+            ...translucentCardStyle,
+            borderLeft: '4px solid #9be564',
+          }}>
+            <div className="flex items-start justify-between">
+              <div className="flex items-center">
+                <div className="w-48 h-48 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: 'rgba(155, 229, 100, 0.2)' }}>
+                  <SyncOutlined spin style={{ fontSize: 24, color: '#9be564' }} />
+                </div>
+                <div>
+                  <div className="text-18 font-bold text-platinum mb-4">Pending Registration</div>
+                  <div className="text-14 text-platinum/70">
+                    {state.codeRegStatus?.message || 'Waiting for claim...'}
+                  </div>
+                </div>
+              </div>
+              <Button
+                type="text"
+                danger
+                icon={<CloseOutlined />}
+                onClick={cancelCodeRegistration}
+                loading={state.codeRegLoading}
+              >
+                Cancel
+              </Button>
+            </div>
+
+            {/* Claim Code Display */}
+            {state.codeRegStatus?.claim_code_formatted && (
+              <div className="mt-16 p-16 rounded-12 text-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}>
+                <div className="text-12 text-platinum/50 uppercase tracking-wide mb-8">Registration Code</div>
+                <div className="text-32 font-mono font-bold text-platinum tracking-widest">
+                  {state.codeRegStatus.claim_code_formatted}
+                </div>
+                {countdown && (
+                  <div className={`text-14 mt-8 ${countdown === 'Expired' ? 'text-red-400' : 'text-platinum/60'}`}>
+                    {countdown === 'Expired' ? 'Code expired' : `Expires in ${countdown}`}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Internet Warning */}
+            {state.codeRegStatus?.internet_available === false && (
+              <Alert
+                type="warning"
+                showIcon
+                icon={<WifiOutlined />}
+                message="No internet connection"
+                description="Registration will continue automatically when connection is restored."
+                className="mt-16"
+                style={{ backgroundColor: 'rgba(255, 193, 7, 0.1)', border: '1px solid rgba(255, 193, 7, 0.3)' }}
+              />
+            )}
+
+            {/* Retry Count */}
+            {state.codeRegStatus?.retry_count && state.codeRegStatus.retry_count > 0 && (
+              <div className="text-12 text-platinum/50 mt-12">
+                Retry attempt: {state.codeRegStatus.retry_count}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* User Account Section */}
       <div className="mb-24">

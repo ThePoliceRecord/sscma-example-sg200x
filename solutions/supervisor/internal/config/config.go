@@ -31,7 +31,6 @@ type Config struct {
 	CertIssuer       string // Issuer organization name
 
 	// Security settings
-	NoAuth              bool
 	JWTSecret           []byte
 	TokenExpiration     time.Duration
 	BCryptCost          int
@@ -81,7 +80,6 @@ func DefaultConfig() *Config {
 		CertLocality:     "Shenzhen",
 		CertIssuer:       "Seeed Studio",
 
-		NoAuth:              false,
 		JWTSecret:           nil, // Will be generated
 		TokenExpiration:     72 * time.Hour,
 		BCryptCost:          12,
@@ -187,9 +185,6 @@ func (c *Config) loadFromEnv() {
 	}
 	if issuer := os.Getenv("SUPERVISOR_CERT_ISSUER"); issuer != "" {
 		c.CertIssuer = issuer
-	}
-	if noAuth := os.Getenv("SUPERVISOR_NO_AUTH"); noAuth == "true" || noAuth == "1" {
-		c.NoAuth = true
 	}
 	if secret := os.Getenv("SUPERVISOR_JWT_SECRET"); secret != "" {
 		c.JWTSecret = []byte(secret)

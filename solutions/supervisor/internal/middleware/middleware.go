@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"supervisor/internal/auth"
-	"supervisor/internal/config"
 	"supervisor/pkg/logger"
 )
 
@@ -85,16 +84,8 @@ func SecureHeaders(next http.Handler) http.Handler {
 
 // Auth creates an authentication middleware.
 func Auth(am *auth.AuthManager, noAuthPaths map[string]bool) func(http.Handler) http.Handler {
-	cfg := config.Get()
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip auth if globally disabled
-			if cfg.NoAuth {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			// Check if this path requires auth
 			path := r.URL.Path
 

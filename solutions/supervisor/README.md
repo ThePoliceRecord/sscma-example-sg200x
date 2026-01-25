@@ -183,7 +183,6 @@ Options:
 | `SUPERVISOR_HTTPS_PORT` | HTTPS port | (disabled) |
 | `SUPERVISOR_ROOT_DIR` | Web root directory | /usr/share/supervisor/www/ |
 | `SUPERVISOR_SCRIPT_PATH` | Main script path | /usr/share/supervisor/scripts/main.sh |
-| `SUPERVISOR_NO_AUTH` | Disable authentication | false |
 | `SUPERVISOR_JWT_SECRET` | JWT signing secret | (auto-generated) |
 | `SUPERVISOR_LOG_LEVEL` | Log level (0-4) | 1 (Warning) |
 | `SUPERVISOR_LOCAL_DIR` | Local storage directory | /userdata |

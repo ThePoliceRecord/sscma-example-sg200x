@@ -890,24 +890,7 @@ body {
   color: var(--platinum);
 }
 
-/* OAuth Button Styling */
-#oauth-signin-btn {
-  background: linear-gradient(135deg, var(--blue-1) 0%, var(--blue-2) 100%);
-  border: 2px solid var(--cobalt-blue);
-  box-shadow: 0 4px 15px rgba(35, 40, 187, 0.4);
-  transition: all 0.3s ease;
-}
-
-#oauth-signin-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(35, 40, 187, 0.6);
-}
-
-#oauth-signin-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-/* Responsive OAuth */
+/* Responsive Registration */
 @media (max-width: 640px) {
   .btn-large {
     min-width: 100%;
@@ -920,82 +903,6 @@ body {
   }
 }
 
-/* =====================
-   QR Scan Styles
-   ===================== */
-
-/* Camera Preview Container */
-.camera-preview-container {
-  position: relative;
-  width: 100%;
-  max-width: 480px;
-  margin: 1rem auto;
-  background: #000;
-  border-radius: 0.5rem;
-  overflow: hidden;
-  aspect-ratio: 4/3;
-}
-
-#qr-camera-preview {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-/* Scan Overlay with Target Box */
-.scan-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.scan-target {
-  width: 200px;
-  height: 200px;
-  border: 3px solid rgba(155, 229, 100, 0.8);
-  border-radius: 1rem;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
-  animation: pulse-border 2s ease-in-out infinite;
-}
-
-@keyframes pulse-border {
-  0%, 100% {
-    border-color: rgba(155, 229, 100, 0.8);
-  }
-  50% {
-    border-color: rgba(155, 229, 100, 0.4);
-  }
-}
-
-/* Scan Status */
-.scan-status {
-  text-align: center;
-  padding: 1rem;
-  font-size: 1rem;
-  color: var(--platinum);
-}
-
-.scan-status .status-text {
-  display: block;
-}
-
-/* QR Scan Section */
-.qr-scan-section {
-  margin: 1rem 0;
-  text-align: center;
-}
-
-.qr-scan-section .btn {
-  margin-top: 1rem;
-}
-
 /* Registration Options */
 .registration-options {
   display: flex;
@@ -1006,39 +913,8 @@ body {
   padding: 1.5rem;
 }
 
-.or-divider {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  max-width: 280px;
-  color: var(--gray-1);
-  font-size: 0.875rem;
-}
-
-.or-divider::before,
-.or-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--gray-4);
-}
-
-.or-divider span {
-  padding: 0 1rem;
-}
-
-/* Responsive QR Scan */
+/* Responsive Registration Options */
 @media (max-width: 640px) {
-  .camera-preview-container {
-    max-width: 100%;
-    border-radius: 0;
-  }
-
-  .scan-target {
-    width: 150px;
-    height: 150px;
-  }
-
   .registration-options {
     padding: 1rem 0.5rem;
   }

@@ -39,7 +39,6 @@ func main() {
 		rootDir      = flag.String("r", "", "Web root directory")
 		scriptPath   = flag.String("s", "", "Script path")
 		certDir      = flag.String("c", "", "TLS certificate directory")
-		noAuth       = flag.Bool("n", false, "Disable authentication")
 		logLevel     = flag.Int("v", -1, "Log level (0-4)")
 		checkUpdates = flag.Bool("check-updates", false, "Run a one-shot OS update check (for cron) and exit")
 	)
@@ -71,9 +70,6 @@ func main() {
 	}
 	if *certDir != "" {
 		cfg.CertDir = *certDir
-	}
-	if *noAuth {
-		cfg.NoAuth = true
 	}
 	if *logLevel >= 0 {
 		cfg.LogLevel = *logLevel

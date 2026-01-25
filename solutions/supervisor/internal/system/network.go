@@ -4,8 +4,10 @@ package system
 import (
 	"bufio"
 	"net"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // GetIP returns the IPv4 address of the specified network interface.
@@ -176,4 +178,74 @@ func GetInterfaceInfo(ifname string) *InterfaceInfo {
 func InterfaceExists(ifname string) bool {
 	_, err := net.InterfaceByName(ifname)
 	return err == nil
+}
+
+// InternetStatus contains internet connectivity status information.
+type InternetStatus struct {
+	Available   bool   `json:"available"`
+	Latency     int64  `json:"latency_ms,omitempty"` // Round-trip time in milliseconds
+	CheckedHost string `json:"checked_host"`
+	Error       string `json:"error,omitempty"`
+}
+
+// CheckInternet checks if internet access is available by making HTTP requests to reliable endpoints.
+// It tries multiple endpoints to ensure accuracy.
+func CheckInternet() *InternetStatus {
+	// List of reliable endpoints to check (in order of preference)
+	endpoints := []string{
+		"https://clients3.google.com/generate_204", // Google connectivity check (returns 204)
+		"https://www.google.com/favicon.ico",       // Google favicon
+		"https://connectivitycheck.gstatic.com/generate_204",
+		"https://1.1.1.1/",          // Cloudflare
+		"https://www.cloudflare.com/favicon.ico",
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Don't follow redirects for connectivity checks
+			return http.ErrUseLastResponse
+		},
+	}
+
+	for _, endpoint := range endpoints {
+		start := time.Now()
+		resp, err := client.Head(endpoint)
+		latency := time.Since(start).Milliseconds()
+
+		if err != nil {
+			continue // Try next endpoint
+		}
+		resp.Body.Close()
+
+		// Accept 2xx, 3xx, and 204 (No Content) as success
+		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			return &InternetStatus{
+				Available:   true,
+				Latency:     latency,
+				CheckedHost: endpoint,
+			}
+		}
+	}
+
+	// All endpoints failed
+	return &InternetStatus{
+		Available:   false,
+		CheckedHost: endpoints[0],
+		Error:       "All connectivity checks failed",
+	}
+}
+
+// CheckInternetWithDNS performs a simple DNS lookup to check basic connectivity.
+// This is faster but less reliable than HTTP checks.
+func CheckInternetWithDNS() bool {
+	hosts := []string{"google.com", "cloudflare.com", "1.1.1.1"}
+
+	for _, host := range hosts {
+		_, err := net.LookupHost(host)
+		if err == nil {
+			return true
+		}
+	}
+	return false
 }

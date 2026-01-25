@@ -251,7 +251,12 @@
       <div id="step-5" class="setup-step hidden">
         <div class="card">
           <h2 class="card-title">Register Your Camera</h2>
-          <p>Scan a QR code from the Authority Alert app, or sign in with your account.</p>
+          <p>Use a registration code from the Authority Alert app to register your camera.</p>
+
+          <!-- Internet Warning Banner -->
+          <div id="internet-warning" class="alert alert-warning hidden" style="margin-bottom: 1rem;">
+            <strong>No internet connection.</strong> Registration will continue when connection is restored.
+          </div>
 
           <!-- Registration Status -->
           <div id="registration-status" class="registration-status hidden">
@@ -259,34 +264,10 @@
             <div id="registration-status-text" class="status-text"></div>
           </div>
 
-          <!-- QR Scan Section (hidden by default, shown when scanning) -->
-          <div id="qr-scan-section" class="qr-scan-section hidden">
-            <div class="camera-preview-container">
-              <video id="qr-camera-preview" autoplay muted playsinline></video>
-              <div class="scan-overlay">
-                <div class="scan-target"></div>
-              </div>
-            </div>
-            <div id="qr-scan-status" class="scan-status">
-              <span class="status-text">Position QR code in front of camera</span>
-            </div>
-            <button type="button" class="btn btn-secondary" onclick="oobeApp.cancelQRScan()">
-              Cancel Scan
-            </button>
-          </div>
-
           <!-- Registration Options (shown by default) -->
           <div id="registration-options" class="registration-options">
-            <button type="button" class="btn btn-primary btn-large" onclick="oobeApp.startQRRegistration()">
-              Scan QR Code
-            </button>
-            <div class="or-divider"><span>or</span></div>
             <button type="button" class="btn btn-info btn-large" onclick="oobeApp.startCodeRegistration()">
               Use Registration Code
-            </button>
-            <div class="or-divider"><span>or</span></div>
-            <button type="button" id="oauth-signin-btn" class="btn btn-secondary" onclick="oobeApp.handleOAuthSignIn()">
-              Sign In with Account
             </button>
           </div>
 
@@ -305,10 +286,19 @@
               <p>1. Open the Authority Alert app on your phone</p>
               <p>2. Go to Settings &gt; Add Camera</p>
               <p>3. Select "Enter Code" and type the code above</p>
+              <p style="margin-top: 1rem;"><strong>Or</strong> claim from your browser:</p>
             </div>
-            <button type="button" class="btn btn-secondary" onclick="oobeApp.cancelCodeRegistration()">
-              Cancel
-            </button>
+            <a href="https://dev.thepolicerecord.com/claim" target="_blank" rel="noopener" class="btn btn-secondary" style="margin-bottom: 1rem;">
+              Open Claim Page ↗
+            </a>
+            <div class="btn-group" style="margin-top: 1rem;">
+              <button type="button" class="btn btn-secondary" onclick="oobeApp.cancelCodeRegistration()">
+                Cancel
+              </button>
+              <button type="button" id="continue-background-btn" class="btn btn-info hidden" onclick="oobeApp.exitToSupervisorUI()">
+                Continue in Background
+              </button>
+            </div>
           </div>
 
           <!-- Post-Registration Info (shown after successful registration) -->

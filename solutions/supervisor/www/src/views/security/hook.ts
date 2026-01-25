@@ -1,5 +1,5 @@
-import { useEffect, Reducer, useReducer } from "react";
-import { Form } from "antd";
+import { useEffect, Reducer, useReducer, useRef, useCallback } from "react";
+import { Form, message } from "antd";
 import useConfigStore from "@/store/config";
 import { encryptPassword } from "@/utils";
 import moment from "moment";
@@ -12,6 +12,7 @@ import {
   addSshKeyApi,
 } from "@/api/user";
 import useUserStore from "@/store/user";
+import { supervisorRequest } from "@/utils/request";
 
 interface FormParams {
   username: string;
@@ -20,6 +21,20 @@ interface FormParams {
   sshName: string;
   sshKey: string;
 }
+
+// Code registration status from supervisor
+interface CodeRegistrationStatus {
+  status: string; // idle | generating | active | claimed | expired | error
+  message?: string;
+  claim_code?: string;
+  claim_code_formatted?: string;
+  expires_at?: string;
+  started_at?: string;
+  internet_available?: boolean;
+  last_error?: string;
+  retry_count?: number;
+}
+
 export enum IFormTypeEnum {
   Key = "Key",
   Username = "Username",
@@ -35,6 +50,9 @@ interface IInitialState {
   sshkeyList: ISshItem[];
   curSshInfo?: ISshItem;
   sshEnabled: boolean;
+  // Code registration
+  codeRegStatus: CodeRegistrationStatus | null;
+  codeRegLoading: boolean;
 }
 type ActionType = { type: "setState"; payload: Partial<IInitialState> };
 const initialState: IInitialState = {
@@ -45,6 +63,8 @@ const initialState: IInitialState = {
   username: "",
   sshkeyList: [],
   sshEnabled: false,
+  codeRegStatus: null,
+  codeRegLoading: false,
 };
 function reducer(state: IInitialState, action: ActionType): IInitialState {
   switch (action.type) {
@@ -172,9 +192,84 @@ export function useData() {
       console.error("Failed to set SSH status:", error);
     }
   };
+
+  // Code registration status polling
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const fetchCodeRegistrationStatus = useCallback(async () => {
+    try {
+      const response = await supervisorRequest<CodeRegistrationStatus>({
+        url: '/api/deviceMgr/codeRegistrationStatus',
+        method: 'GET',
+      }, { catchs: true });
+
+      if (response.code === 0 && response.data) {
+        setStates({ codeRegStatus: response.data });
+
+        // If claimed, show success and stop polling
+        if (response.data.status === 'claimed') {
+          message.success('Camera registered successfully!');
+          stopCodeRegPolling();
+          // Refresh page after a delay
+          setTimeout(() => window.location.reload(), 2000);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch code registration status:", error);
+    }
+  }, []);
+
+  const startCodeRegPolling = useCallback(() => {
+    // Fetch immediately
+    fetchCodeRegistrationStatus();
+    // Then poll every 3 seconds
+    if (!pollIntervalRef.current) {
+      pollIntervalRef.current = setInterval(fetchCodeRegistrationStatus, 3000);
+    }
+  }, [fetchCodeRegistrationStatus]);
+
+  const stopCodeRegPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
+  const cancelCodeRegistration = async () => {
+    try {
+      setStates({ codeRegLoading: true });
+      await supervisorRequest({
+        url: '/api/deviceMgr/cancelCodeRegistration',
+        method: 'POST',
+      });
+      stopCodeRegPolling();
+      setStates({ codeRegStatus: null, codeRegLoading: false });
+      message.success('Registration cancelled');
+    } catch (error) {
+      console.error("Failed to cancel code registration:", error);
+      setStates({ codeRegLoading: false });
+    }
+  };
+
   useEffect(() => {
     onQueryUserInfo();
+    // Check for active code registration on mount
+    fetchCodeRegistrationStatus();
+
+    return () => {
+      stopCodeRegPolling();
+    };
   }, []);
+
+  // Start polling if there's an active registration
+  useEffect(() => {
+    if (state.codeRegStatus?.status === 'active' || state.codeRegStatus?.status === 'generating') {
+      startCodeRegPolling();
+    }
+    return () => {
+      stopCodeRegPolling();
+    };
+  }, [state.codeRegStatus?.status]);
   return {
     state,
     setStates,
@@ -191,5 +286,6 @@ export function useData() {
     onAddSshFinish,
     onDeleteFinish,
     setSShStatus,
+    cancelCodeRegistration,
   };
 }

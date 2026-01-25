@@ -148,14 +148,6 @@ class OOBEApp {
   // WiFi scan configuration
   static WIFI_SCAN_MAX_RETRIES = 3;
   static WIFI_SCAN_RETRY_DELAY = 2000; // milliseconds
-  
-  // Auth0 Configuration (Public OAuth - no client secret)
-  static AUTH0_CONFIG = {
-    domain: 'tpr-prod.us.auth0.com',
-    clientId: 'Id8RBRWK92AEYGcQgXkzlmBtC0MxsX2f',
-    audience: 'https://thepolicerecord.com/api',
-    scope: 'openid profile email offline_access'
-  };
 
   // Platform API base URL
   // Default to dev environment for testing
@@ -179,17 +171,8 @@ class OOBEApp {
       wifiSecurity: 'WPA2'
     };
     
-    // OAuth state
-    this.oauthState = null;
-    this.codeVerifier = null;
-    
     // WiFi scan abort controller
     this.wifiScanController = null;
-
-    // QR registration state
-    this.jmuxerInstance = null;
-    this.cameraWebSocket = null;
-    this.qrStatusPollInterval = null;
 
     // Set up auth failure handler
     this.api.onAuthFailure = (message) => this.handleAuthFailure(message);
@@ -200,24 +183,7 @@ class OOBEApp {
   async init() {
     console.log('Initializing OOBE...');
     this.hideLoading();
-    
-    // Check if we're returning from OAuth callback
-    const urlParams = new URLSearchParams(window.location.search);
-    const authCode = urlParams.get('code');
-    const state = urlParams.get('state');
-    const error = urlParams.get('error');
-    
-    if (error) {
-      console.error('OAuth error:', error, urlParams.get('error_description'));
-      this.showError('Sign-in failed: ' + (urlParams.get('error_description') || error));
-      // Clean up URL
-      window.history.replaceState({}, document.title, window.location.pathname);
-    } else if (authCode && state) {
-      // Handle OAuth callback
-      await this.handleOAuthCallback(authCode, state);
-      return;
-    }
-    
+
     // Check if we have a stored token and validate it
     const storedToken = this.tokenManager.getToken('authToken');
     if (storedToken) {
@@ -1022,10 +988,6 @@ class OOBEApp {
 
     this.setupData.deviceName = deviceName;
     this.setupData.timezone = timezone;
-    
-    // Store device name in sessionStorage so it persists across OAuth redirect
-    sessionStorage.setItem('oobe_device_name', deviceName);
-    sessionStorage.setItem('oobe_timezone', timezone);
 
     this.showLoading('Saving device configuration...');
 
@@ -1252,205 +1214,9 @@ class OOBEApp {
   }
 
   /**
-   * Generate a cryptographically random string for PKCE
-   */
-  generateRandomString(length) {
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-    const randomValues = new Uint8Array(length);
-    crypto.getRandomValues(randomValues);
-    return Array.from(randomValues)
-      .map(v => charset[v % charset.length])
-      .join('');
-  }
-
-  /**
-   * Generate SHA-256 hash and base64url encode it for PKCE
-   */
-  async generateCodeChallenge(verifier) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(verifier);
-    const digest = await crypto.subtle.digest('SHA-256', data);
-    
-    // Base64url encode
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(digest)));
-    return base64
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-  }
-
-  // ======================
-  // QR Registration Methods
-  // ======================
-
-  /**
-   * Initialize camera stream for QR scanning preview
-   */
-  async initCameraStream() {
-    try {
-      // Get WebSocket URL from supervisor API
-      const result = await this.api.request('/api/deviceMgr/getCameraWebsocketUrl');
-      if (!result.success) {
-        console.error('Failed to get camera WebSocket URL:', result.error);
-        return;
-      }
-
-      // Use channel 2 (640x480 @ 15fps - same as QR reader uses)
-      let wsUrl = result.data.websocketUrl;
-      wsUrl += (wsUrl.includes('?') ? '&' : '?') + 'channel=2';
-
-      console.log('Connecting to camera WebSocket:', wsUrl);
-
-      // Initialize jmuxer (already included via jmuxer.min.js)
-      this.jmuxerInstance = new jmuxer({
-        node: 'qr-camera-preview',
-        mode: 'video',
-        flushingTime: 0,
-        fps: 15,
-        clearBuffer: true,
-      });
-
-      // Connect WebSocket
-      this.cameraWebSocket = new WebSocket(wsUrl);
-      this.cameraWebSocket.binaryType = 'arraybuffer';
-      this.cameraWebSocket.onopen = () => console.log('Camera WebSocket connected');
-      this.cameraWebSocket.onerror = (e) => console.error('Camera WebSocket error:', e);
-      this.cameraWebSocket.onmessage = (evt) => {
-        const buffer = new Uint8Array(evt.data);
-        // Skip channel ID byte (first), skip timestamp (last 8 bytes)
-        const frameData = buffer.subarray(1, buffer.length - 8);
-        if (this.jmuxerInstance) {
-          this.jmuxerInstance.feed({ video: frameData });
-        }
-      };
-    } catch (error) {
-      console.error('Failed to initialize camera stream:', error);
-    }
-  }
-
-  /**
-   * Stop camera stream and clean up resources
-   */
-  stopCameraStream() {
-    if (this.cameraWebSocket) {
-      this.cameraWebSocket.close();
-      this.cameraWebSocket = null;
-    }
-    if (this.jmuxerInstance) {
-      this.jmuxerInstance.destroy();
-      this.jmuxerInstance = null;
-    }
-  }
-
-  /**
-   * Start QR code registration flow
-   */
-  async startQRRegistration() {
-    // Get location name from step 3 data or sessionStorage
-    const locationName = this.setupData.deviceName || sessionStorage.getItem('oobe_device_name') || 'Unknown Location';
-
-    // Show camera preview section, hide registration options
-    document.getElementById('registration-options').classList.add('hidden');
-    document.getElementById('qr-scan-section').classList.remove('hidden');
-
-    // Start camera stream for visual feedback
-    await this.initCameraStream();
-
-    // Tell supervisor to start QR registration flow
-    const result = await this.api.request('/api/deviceMgr/startQRRegistration', 'POST', {
-      location_name: locationName,
-      latitude: this.setupData.geolocation?.latitude,
-      longitude: this.setupData.geolocation?.longitude
-    });
-
-    if (!result.success) {
-      this.showError('Failed to start QR scan: ' + (result.error || 'Unknown error'));
-      this.cancelQRScan();
-      return;
-    }
-
-    console.log('QR registration started');
-
-    // Start polling for status updates (every 500ms)
-    this.qrStatusPollInterval = setInterval(() => this.pollQRStatus(), 500);
-  }
-
-  /**
-   * Poll for QR registration status updates
-   */
-  async pollQRStatus() {
-    const result = await this.api.request('/api/deviceMgr/qrRegistrationStatus');
-    if (!result.success) return;
-
-    const status = result.data;
-    this.updateQRStatusUI(status);
-
-    // Handle terminal states
-    if (status.status === 'complete') {
-      this.stopPolling();
-      this.stopCameraStream();
-      // Show success and continue button
-      document.getElementById('qr-scan-section').classList.add('hidden');
-      document.getElementById('registration-success').classList.remove('hidden');
-      document.getElementById('continue-after-registration-btn').classList.remove('hidden');
-      console.log('QR registration completed:', status.result);
-    } else if (status.status === 'error' || status.status === 'timeout') {
-      this.stopPolling();
-      this.stopCameraStream();
-      this.showError(status.message || 'QR scan failed');
-      this.showRegistrationOptions();
-    }
-  }
-
-  /**
-   * Update QR scan status UI
-   */
-  updateQRStatusUI(status) {
-    const statusEl = document.getElementById('qr-scan-status');
-    if (!statusEl) return;
-
-    const messages = {
-      'idle': 'Ready to scan',
-      'scanning': 'Scanning for QR code...',
-      'detected': 'QR code detected! Processing...',
-      'registering': 'Registering camera with platform...',
-      'complete': 'Registration complete!',
-      'timeout': 'Scan timed out - no QR code found',
-      'error': status.message || 'An error occurred'
-    };
-
-    const textEl = statusEl.querySelector('.status-text');
-    if (textEl) {
-      textEl.textContent = messages[status.status] || status.message || status.status;
-    }
-  }
-
-  /**
-   * Cancel QR scan and return to registration options
-   */
-  cancelQRScan() {
-    this.stopPolling();
-    this.stopCameraStream();
-    // Tell supervisor to cancel (fire and forget)
-    this.api.request('/api/deviceMgr/cancelQRRegistration', 'POST');
-    this.showRegistrationOptions();
-  }
-
-  /**
-   * Stop status polling
-   */
-  stopPolling() {
-    if (this.qrStatusPollInterval) {
-      clearInterval(this.qrStatusPollInterval);
-      this.qrStatusPollInterval = null;
-    }
-  }
-
-  /**
-   * Show registration options, hide QR scan section
+   * Show registration options, hide code registration section
    */
   showRegistrationOptions() {
-    document.getElementById('qr-scan-section').classList.add('hidden');
     document.getElementById('code-registration-section')?.classList.add('hidden');
     document.getElementById('registration-options').classList.remove('hidden');
   }
@@ -1463,8 +1229,8 @@ class OOBEApp {
    * Start code-based registration flow
    */
   async startCodeRegistration() {
-    // Get location name from step 3 data or sessionStorage
-    const locationName = this.setupData.deviceName || sessionStorage.getItem('oobe_device_name') || 'Unknown Location';
+    // Get location name from step 3 data
+    const locationName = this.setupData.deviceName || 'Unknown Location';
 
     // Show code registration section, hide registration options
     document.getElementById('registration-options').classList.add('hidden');
@@ -1484,7 +1250,38 @@ class OOBEApp {
     );
 
     if (!result.success) {
-      this.showError('Failed to start code registration: ' + (result.error || 'Unknown error'));
+      // Check if this is an auth error - try to re-authenticate
+      if (result.authFailure || result.code === 401) {
+        console.log('Auth failure on code registration, attempting re-authentication...');
+        if (this.reAuthenticateAfterTimeChange) {
+          const reAuthResult = await this.reAuthenticateAfterTimeChange();
+          if (reAuthResult.success) {
+            console.log('Re-authentication successful, retrying code registration...');
+            // Retry the registration
+            const retryResult = await this.api.startCodeRegistration(
+              locationName,
+              this.setupData.geolocation?.latitude,
+              this.setupData.geolocation?.longitude
+            );
+            if (retryResult.success) {
+              console.log('Code registration started after re-auth:', retryResult.data);
+              this.displayRegistrationCode(retryResult.data.claim_code_formatted, retryResult.data.expires_at);
+              this.codeStatusPollInterval = setInterval(() => this.pollCodeStatus(), 2000);
+              return;
+            }
+          }
+        }
+        this.showError('Session expired. Please go back to the password step and try again.');
+        this.showRegistrationOptions();
+        return;
+      }
+      // Check if this is a network error
+      if (result.error && (result.error.includes('network') || result.error.includes('connect') || result.error.includes('Failed to fetch'))) {
+        this.showError('No internet connection. Please check your network and try again.');
+        this.showInternetWarning(true);
+      } else {
+        this.showError('Failed to start code registration: ' + (result.error || 'Unknown error'));
+      }
       this.showRegistrationOptions();
       return;
     }
@@ -1568,14 +1365,33 @@ class OOBEApp {
    */
   async pollCodeStatus() {
     const result = await this.api.getCodeRegistrationStatus();
-    if (!result.success) return;
+    if (!result.success) {
+      // Network error during polling - show warning but keep trying
+      console.warn('Failed to poll code status:', result.error);
+      this.showInternetWarning(true);
+      return;
+    }
 
     const status = result.data;
     this.updateCodeRegistrationUI(status);
 
+    // Handle internet availability status
+    if (status.internet_available === false) {
+      this.showInternetWarning(true);
+      // Show "Continue in Background" button
+      const bgBtn = document.getElementById('continue-background-btn');
+      if (bgBtn) bgBtn.classList.remove('hidden');
+    } else {
+      this.showInternetWarning(false);
+      // Hide background button if internet is back
+      const bgBtn = document.getElementById('continue-background-btn');
+      if (bgBtn && status.status === 'active') bgBtn.classList.add('hidden');
+    }
+
     // Handle terminal states
     if (status.status === 'claimed') {
       this.stopCodePolling();
+      this.showInternetWarning(false);
       // Show success and continue button
       document.getElementById('code-registration-section').classList.add('hidden');
       document.getElementById('registration-success').classList.remove('hidden');
@@ -1583,9 +1399,42 @@ class OOBEApp {
       console.log('Code registration completed:', status.result);
     } else if (status.status === 'error' || status.status === 'expired') {
       this.stopCodePolling();
+      this.showInternetWarning(false);
       this.showError(status.message || 'Code registration failed');
       this.showRegistrationOptions();
     }
+  }
+
+  /**
+   * Show or hide the internet warning banner
+   */
+  showInternetWarning(show) {
+    const warningEl = document.getElementById('internet-warning');
+    if (warningEl) {
+      if (show) {
+        warningEl.classList.remove('hidden');
+      } else {
+        warningEl.classList.add('hidden');
+      }
+    }
+  }
+
+  /**
+   * Exit OOBE and navigate to supervisor UI
+   * Registration will continue in background
+   */
+  exitToSupervisorUI() {
+    // Stop polling in OOBE (backend continues independently)
+    this.stopCodePolling();
+
+    // Complete OOBE (remove flag file)
+    fetch('/oobe/api/complete', { method: 'POST' })
+      .then(() => console.log('OOBE completed, navigating to supervisor UI'))
+      .catch(e => console.warn('Error completing OOBE:', e));
+
+    // Navigate to main supervisor UI
+    // Note: Registration continues in background on the device
+    window.location.href = '/';
   }
 
   /**
@@ -1595,7 +1444,8 @@ class OOBEApp {
     const statusText = document.getElementById('code-status-text');
     const statusIcon = document.getElementById('code-status-icon');
 
-    const messages = {
+    // Default messages for each status
+    const defaultMessages = {
       'idle': 'Ready',
       'generating': 'Generating registration code...',
       'active': 'Enter this code in the Authority Alert mobile app',
@@ -1613,11 +1463,31 @@ class OOBEApp {
       'error': '❌'
     };
 
+    // Use server-provided message if available (may include retry info)
+    let displayMessage = status.message || defaultMessages[status.status] || status.status;
+    let displayIcon = icons[status.status] || '';
+
+    // Special handling for "Setting up..." state (confirming with platform)
+    if (status.message === 'Setting up...' || status.status === 'confirming') {
+      displayIcon = '⏳';
+      displayMessage = 'Setting up...';
+    }
+
+    // Special handling for internet issues
+    if (status.internet_available === false) {
+      displayIcon = '⚠️';
+      if (status.retry_count > 0) {
+        displayMessage = `No internet. Retrying... (attempt ${status.retry_count})`;
+      } else {
+        displayMessage = 'No internet. We\'ll keep trying in the background.';
+      }
+    }
+
     if (statusText) {
-      statusText.textContent = messages[status.status] || status.message || status.status;
+      statusText.textContent = displayMessage;
     }
     if (statusIcon) {
-      statusIcon.textContent = icons[status.status] || '';
+      statusIcon.textContent = displayIcon;
     }
   }
 
@@ -1643,312 +1513,6 @@ class OOBEApp {
       clearInterval(this.codeExpiryInterval);
       this.codeExpiryInterval = null;
     }
-  }
-
-  // ======================
-  // OAuth Methods
-  // ======================
-
-  /**
-   * Initiate OAuth sign-in flow with Auth0 using PKCE
-   */
-  async handleOAuthSignIn() {
-    try {
-      this.showLoading('Preparing sign-in...');
-      
-      // Generate PKCE code verifier and challenge
-      this.codeVerifier = this.generateRandomString(64);
-      const codeChallenge = await this.generateCodeChallenge(this.codeVerifier);
-      
-      // Generate state for CSRF protection
-      this.oauthState = this.generateRandomString(32);
-      
-      // Store in sessionStorage for callback with timestamp for expiration
-      const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes
-      sessionStorage.setItem('oauth_code_verifier', this.codeVerifier);
-      sessionStorage.setItem('oauth_state', this.oauthState);
-      sessionStorage.setItem('oauth_step', this.currentStep.toString());
-      sessionStorage.setItem('oauth_expires_at', expiresAt.toString());
-      
-      // Build authorization URL
-      const { domain, clientId, audience, scope } = OOBEApp.AUTH0_CONFIG;
-      // Use /api/deviceMgr/oauthCallback for the OAuth redirect
-      // This bypasses the OOBE proxy and is handled directly by the supervisor
-      // The supervisor then redirects to /oobe/index.html with the code and state
-      const redirectUri = `${window.location.origin}/api/deviceMgr/oauthCallback`;
-      
-      const authUrl = new URL(`https://${domain}/authorize`);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('client_id', clientId);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('scope', scope);
-      authUrl.searchParams.set('audience', audience);
-      authUrl.searchParams.set('state', this.oauthState);
-      authUrl.searchParams.set('code_challenge', codeChallenge);
-      authUrl.searchParams.set('code_challenge_method', 'S256');
-      
-      console.log('Redirecting to Auth0 for sign-in...');
-      this.hideLoading();
-      
-      // Redirect to Auth0
-      window.location.href = authUrl.toString();
-      
-    } catch (error) {
-      console.error('Failed to initiate OAuth sign-in:', error);
-      this.hideLoading();
-      this.showError('Failed to start sign-in: ' + error.message);
-    }
-  }
-
-  /**
-   * Handle OAuth callback after Auth0 redirect
-   */
-  async handleOAuthCallback(code, state) {
-    console.log('Handling OAuth callback...');
-    
-    // Check if OAuth state has expired
-    const expiresAt = sessionStorage.getItem('oauth_expires_at');
-    if (expiresAt && Date.now() > parseInt(expiresAt)) {
-      console.error('OAuth state expired');
-      this.showError('Sign-in session expired. Please try again.');
-      sessionStorage.removeItem('oauth_code_verifier');
-      sessionStorage.removeItem('oauth_state');
-      sessionStorage.removeItem('oauth_step');
-      sessionStorage.removeItem('oauth_expires_at');
-      window.history.replaceState({}, document.title, window.location.pathname);
-      this.showStep(5);
-      return;
-    }
-    
-    // Verify state
-    const storedState = sessionStorage.getItem('oauth_state');
-    if (state !== storedState) {
-      console.error('OAuth state mismatch');
-      this.showError('Security error: Invalid state. Please try signing in again.');
-      window.history.replaceState({}, document.title, window.location.pathname);
-      this.showStep(5);
-      return;
-    }
-    
-    // Get stored code verifier
-    const codeVerifier = sessionStorage.getItem('oauth_code_verifier');
-    if (!codeVerifier) {
-      console.error('No code verifier found');
-      this.showError('Session error: Please try signing in again.');
-      window.history.replaceState({}, document.title, window.location.pathname);
-      this.showStep(5);
-      return;
-    }
-    
-    // Clean up URL
-    window.history.replaceState({}, document.title, window.location.pathname);
-    
-    this.showLoading('Completing sign-in...');
-    
-    try {
-      // Exchange code for tokens
-      const { domain, clientId } = OOBEApp.AUTH0_CONFIG;
-      // Must match the redirect URI used in the authorization request
-      const redirectUri = `${window.location.origin}/api/deviceMgr/oauthCallback`;
-      
-      const tokenResponse = await fetch(`https://${domain}/oauth/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          grant_type: 'authorization_code',
-          client_id: clientId,
-          code_verifier: codeVerifier,
-          code: code,
-          redirect_uri: redirectUri
-        })
-      });
-      
-      if (!tokenResponse.ok) {
-        const errorData = await tokenResponse.json().catch(() => ({}));
-        throw new Error(errorData.error_description || errorData.error || 'Token exchange failed');
-      }
-      
-      const tokens = await tokenResponse.json();
-      console.log('OAuth tokens received');
-      
-      // Store tokens securely with expiration
-      // Access tokens typically expire in 1 hour (3600 seconds)
-      const expiresIn = tokens.expires_in || 3600;
-      this.tokenManager.setToken('platformAccessToken', tokens.access_token, expiresIn);
-      
-      if (tokens.refresh_token) {
-        // Refresh tokens typically last much longer (30 days)
-        this.tokenManager.setToken('platformRefreshToken', tokens.refresh_token, 30 * 24 * 3600);
-      }
-      if (tokens.id_token) {
-        // ID tokens have same expiration as access tokens
-        this.tokenManager.setToken('platformIdToken', tokens.id_token, expiresIn);
-      }
-      
-      // Get user info from ID token or userinfo endpoint
-      let userInfo = null;
-      if (tokens.id_token) {
-        // Decode ID token (JWT) to get user info
-        try {
-          const payload = tokens.id_token.split('.')[1];
-          userInfo = JSON.parse(atob(payload));
-        } catch (e) {
-          console.log('Could not decode ID token');
-        }
-      }
-      
-      // Register camera via supervisor single-call endpoint using the access token
-      console.log('Calling registerCameraWithSupervisor...');
-      await this.registerCameraWithSupervisor(tokens.access_token, userInfo);
-      console.log('Registration completed successfully');
-      
-      // Clean up session storage
-      sessionStorage.removeItem('oauth_code_verifier');
-      sessionStorage.removeItem('oauth_state');
-      sessionStorage.removeItem('oauth_step');
-      sessionStorage.removeItem('oauth_expires_at');
-      sessionStorage.removeItem('oobe_device_name');
-      sessionStorage.removeItem('oobe_timezone');
-      
-      this.hideLoading();
-      
-      // Show success and go to step 5
-      this.showStep(5);
-      this.showRegistrationSuccess();
-      
-    } catch (error) {
-      console.error('OAuth callback error:', error);
-      this.hideLoading();
-      this.showError('Sign-in failed: ' + error.message);
-      
-      // Clean up
-      sessionStorage.removeItem('oauth_code_verifier');
-      sessionStorage.removeItem('oauth_state');
-      sessionStorage.removeItem('oauth_step');
-      sessionStorage.removeItem('oauth_expires_at');
-      
-      // Go to registration step
-      this.showStep(5);
-    }
-  }
-
-  /**
-   * Register camera by asking the supervisor to perform the full platform
-   * registration flow. This sends the OAuth access token to the supervisor
-   * and a minimal registration payload (location_name, lat/lon).
-   * The supervisor automatically populates device-specific fields (serial number,
-   * MAC addresses, firmware version, etc.) from its internal device information.
-   */
-  async registerCameraWithSupervisor(accessToken, userInfo) {
-    console.log('Registering camera via supervisor single-call...');
-
-    // Collect geolocation if available
-    const geolocation = this.setupData.geolocation || {};
-  
-    // Get device name from setup data, sessionStorage, or input field
-    // After OAuth redirect, setupData may be lost, so check sessionStorage
-    let deviceName = this.setupData.deviceName;
-    if (!deviceName) {
-      // Try sessionStorage (persists across OAuth redirect)
-      deviceName = sessionStorage.getItem('oobe_device_name');
-      if (deviceName) {
-        console.log('Restored device name from sessionStorage:', deviceName);
-        this.setupData.deviceName = deviceName;
-      }
-    }
-    if (!deviceName) {
-      // Try to get from the input field if still available
-      const deviceNameInput = document.getElementById('device-name');
-      if (deviceNameInput) {
-        deviceName = deviceNameInput.value.trim();
-      }
-    }
-    
-    // Log for debugging
-    console.log('Device name for registration:', deviceName || 'Unknown Location');
-    console.log('Setup data:', this.setupData);
-  
-    // Send minimal payload with OAuth token - supervisor will fill in device details
-    const registrationPayload = {
-      access_token: accessToken,  // Auth0 OAuth access token
-      location_name: deviceName || 'Unknown Location'
-    };
-    
-    // Only include lat/lon if available
-    if (geolocation.latitude) {
-      registrationPayload.latitude = geolocation.latitude;
-    }
-    if (geolocation.longitude) {
-      registrationPayload.longitude = geolocation.longitude;
-    }
-
-    console.log('Sending minimal registration payload (with OAuth token)');
-
-    // Get supervisor JWT token from secure storage for authentication
-    const supervisorToken = this.tokenManager.getToken('authToken');
-    if (!supervisorToken) {
-      throw new Error('No supervisor authentication token found. Please login again.');
-    }
-
-    // Get CSRF token if available (for future implementation)
-    const csrfToken = this.getCSRFToken();
-    
-    // Call supervisor register endpoint with supervisor JWT token for auth
-    // and OAuth access token in the body
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${supervisorToken}`  // Supervisor JWT token
-    };
-    
-    // Add CSRF token if available
-    if (csrfToken) {
-      headers['X-CSRF-Token'] = csrfToken;
-    }
-    
-    const resp = await fetch('/api/deviceMgr/registerCamera', {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(registrationPayload)
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      console.error('Supervisor registerCamera failed:', resp.status, text);
-      throw new Error('Supervisor registration failed: ' + resp.status);
-    }
-
-    const result = await resp.json().catch(() => null);
-    if (!result) {
-      throw new Error('Invalid response from supervisor');
-    }
-
-    console.log('Raw supervisor response:', result);
-
-    // Check if supervisor returned an error
-    if (result.code !== 0 && result.code !== undefined) {
-      console.error('Supervisor returned error code:', result.code, result.msg);
-      throw new Error(result.msg || 'Registration failed');
-    }
-
-    // Supervisor may wrap platform response in { code: 0, data: { ... } }
-    const payload = result.code === 0 ? result.data : result;
-
-    console.log('Supervisor registration result:', payload);
-
-    // Build a minimal registration record for OOBE status tracking.
-    // DO NOT store secrets, user info, or anything that ties to a specific user.
-    // This file is only used to check if OOBE has been completed.
-    // The supervisor stores the actual secret_key securely in /etc/recamera.conf/platform.info
-    const registrationData = {
-      registered: true,
-      registered_at: new Date().toISOString(),
-      camera_uid: payload?.uid || payload?.camera_uid || null
-    };
-
-    await this.saveRegistrationData(registrationData);
   }
 
   /**
@@ -1984,67 +1548,15 @@ class OOBEApp {
     const statusEl = document.getElementById('registration-status');
     const textEl = document.getElementById('registration-status-text');
     const iconEl = document.getElementById('registration-status-icon');
-    
+
     if (statusEl && textEl) {
       textEl.textContent = message;
       statusEl.className = 'registration-status ' + type;
       statusEl.classList.remove('hidden');
-      
+
       if (iconEl && icon) {
         iconEl.textContent = icon;
       }
-    }
-  }
-
-
-  /**
-   * Get CSRF token from meta tag or cookie
-   */
-  getCSRFToken() {
-    // Try to get from meta tag first
-    const metaTag = document.querySelector('meta[name="csrf-token"]');
-    if (metaTag) {
-      return metaTag.getAttribute('content');
-    }
-    
-    // Try to get from cookie
-    const cookies = document.cookie.split(';');
-    for (let cookie of cookies) {
-      const [name, value] = cookie.trim().split('=');
-      if (name === 'CSRF-TOKEN' || name === 'csrf_token') {
-        return decodeURIComponent(value);
-      }
-    }
-    
-    return null;
-  }
-
-  async saveRegistrationData(registrationData) {
-    try {
-      const csrfToken = this.getCSRFToken();
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      
-      if (csrfToken) {
-        headers['X-CSRF-Token'] = csrfToken;
-      }
-      
-      const response = await fetch('/oobe/api/saveRegistration', {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(registrationData)
-      });
-      
-      const result = await response.json();
-      if (!result.ok) {
-        throw new Error(result.error || 'Failed to save registration');
-      }
-      
-      console.log('Registration data saved successfully');
-    } catch (error) {
-      console.error('Error saving registration:', error);
-      throw error;
     }
   }
 

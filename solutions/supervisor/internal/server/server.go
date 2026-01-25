@@ -254,10 +254,8 @@ func (s *Server) setupRoutes() http.Handler {
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
 	noAuthPaths := map[string]bool{
-		"/api/userMgr/login":                 true,
-		"/api/deviceMgr/queryDeviceInfo":     true, // Needed before login to get device SN
-		"/api/deviceMgr/oauthCallback":       true, // OAuth callback from Auth0 (OOBE)
-		"/api/deviceMgr/generateCameraToken": true, // Generate camera token during OOBE (proxies to platform)
+		"/api/userMgr/login":             true,
+		"/api/deviceMgr/queryDeviceInfo": true, // Needed before login to get device SN
 	}
 
 	// Auth middleware
@@ -285,6 +283,7 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/getCameraWebsocketUrl", deviceHandler.GetCameraWebsocketUrl)
 	apiHandler.HandleFunc("/api/deviceMgr/queryServiceStatus", deviceHandler.QueryServiceStatus)
 	apiHandler.HandleFunc("/api/deviceMgr/getSystemStatus", deviceHandler.GetSystemStatus)
+	apiHandler.HandleFunc("/api/deviceMgr/getInternetStatus", deviceHandler.GetInternetStatus)
 	apiHandler.HandleFunc("/api/deviceMgr/setPower", deviceHandler.SetPower)
 	apiHandler.HandleFunc("/api/deviceMgr/getModelList", deviceHandler.GetModelList)
 	apiHandler.HandleFunc("/api/deviceMgr/getModelInfo", deviceHandler.GetModelInfo)
@@ -311,14 +310,6 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/getAnalyticsConfig", deviceHandler.GetAnalyticsConfig)
 	apiHandler.HandleFunc("/api/deviceMgr/setAnalyticsConfig", deviceHandler.SetAnalyticsConfig)
 	apiHandler.HandleFunc("/api/deviceMgr/reRegisterCamera", deviceHandler.ReRegisterCamera)
-	apiHandler.HandleFunc("/api/deviceMgr/registerCamera", deviceHandler.RegisterCamera)
-	apiHandler.HandleFunc("/api/deviceMgr/oauthCallback", deviceHandler.OAuthCallback)
-	apiHandler.HandleFunc("/api/deviceMgr/generateCameraToken", deviceHandler.GenerateCameraToken)
-
-	// QR-based camera registration (OOBE)
-	apiHandler.HandleFunc("/api/deviceMgr/startQRRegistration", deviceHandler.StartQRRegistration)
-	apiHandler.HandleFunc("/api/deviceMgr/qrRegistrationStatus", deviceHandler.GetQRRegistrationStatus)
-	apiHandler.HandleFunc("/api/deviceMgr/cancelQRRegistration", deviceHandler.CancelQRRegistration)
 
 	// Code-based camera registration (OOBE)
 	apiHandler.HandleFunc("/api/deviceMgr/startCodeRegistration", deviceHandler.StartCodeRegistration)

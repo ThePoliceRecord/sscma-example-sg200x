@@ -11,7 +11,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,45 +38,20 @@ const (
 	// maxOTAUploadSize limits the maximum accepted OTA zip upload size.
 	// OTA zips contain a full rootfs image and can be large.
 	maxOTAUploadSize int64 = 2 << 30 // 2GiB
-
-	// qrReaderPath is the path to the QR code reader binary
-	qrReaderPath = "/usr/bin/qr-reader"
-)
-
-// QRRegistrationState tracks the state of a QR-based camera registration flow.
-type QRRegistrationState struct {
-	Status    string                 `json:"status"`              // idle | scanning | detected | registering | complete | error | timeout
-	Message   string                 `json:"message,omitempty"`   // Human-readable status message
-	StartedAt *time.Time             `json:"started_at,omitempty"`
-	QRData    map[string]interface{} `json:"qr_data,omitempty"`   // Parsed QR code data (api_key, user_id)
-	Result    map[string]interface{} `json:"result,omitempty"`    // Registration result (uid, etc.)
-	cmd       *exec.Cmd                                           // QR reader process (not serialized)
-	cancel    chan struct{}                                       // Cancel signal (not serialized)
-}
-
-// QRRegistrationRequest is the request body for starting QR registration.
-type QRRegistrationRequest struct {
-	LocationName string   `json:"location_name"`
-	Latitude     *float64 `json:"latitude,omitempty"`
-	Longitude    *float64 `json:"longitude,omitempty"`
-}
-
-// Package-level state for QR registration (only one registration at a time)
-var (
-	qrRegState = &QRRegistrationState{Status: "idle"}
-	qrRegMutex sync.Mutex
-	qrRegReq   *QRRegistrationRequest // Stored request for use in goroutine
 )
 
 // CodeRegistrationState tracks the state of a code-based camera registration flow.
 type CodeRegistrationState struct {
-	Status     string                 `json:"status"`                // idle | generating | active | claimed | expired | error
-	Message    string                 `json:"message,omitempty"`     // Human-readable status message
-	ClaimCode  string                 `json:"claim_code,omitempty"`  // The 6-character registration code
-	ExpiresAt  *time.Time             `json:"expires_at,omitempty"`  // When the code expires
-	StartedAt  *time.Time             `json:"started_at,omitempty"`  // When registration started
-	Result     map[string]interface{} `json:"result,omitempty"`      // Registration result (api_key, etc.)
-	cancel     chan struct{}                                         // Cancel signal (not serialized)
+	Status            string                 `json:"status"`                      // idle | generating | active | claimed | expired | error
+	Message           string                 `json:"message,omitempty"`           // Human-readable status message
+	ClaimCode         string                 `json:"claim_code,omitempty"`        // The 6-character registration code
+	ExpiresAt         *time.Time             `json:"expires_at,omitempty"`        // When the code expires
+	StartedAt         *time.Time             `json:"started_at,omitempty"`        // When registration started
+	Result            map[string]interface{} `json:"result,omitempty"`            // Registration result (api_key, etc.)
+	InternetAvailable bool                   `json:"internet_available"`          // Whether internet is currently available
+	LastError         string                 `json:"last_error,omitempty"`        // Last error message (for resilience)
+	RetryCount        int                    `json:"retry_count,omitempty"`       // Number of consecutive retries
+	cancel            chan struct{}                                               // Cancel signal (not serialized)
 }
 
 // CodeRegistrationRequest is the request body for starting code registration.
@@ -89,7 +63,7 @@ type CodeRegistrationRequest struct {
 
 // Package-level state for code registration (only one registration at a time)
 var (
-	codeRegState = &CodeRegistrationState{Status: "idle"}
+	codeRegState = &CodeRegistrationState{Status: "idle", InternetAvailable: true}
 	codeRegMutex sync.Mutex
 	codeRegReq   *CodeRegistrationRequest // Stored request for use in goroutine
 )
@@ -246,6 +220,12 @@ func (h *DeviceHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) 
 		"osName":     system.GetOSName(),
 		"osVersion":  system.GetOSVersion(),
 	})
+}
+
+// GetInternetStatus checks and returns internet connectivity status.
+func (h *DeviceHandler) GetInternetStatus(w http.ResponseWriter, r *http.Request) {
+	status := system.CheckInternet()
+	api.WriteSuccess(w, status)
 }
 
 // SetPowerRequest represents a power mode request.
@@ -1252,44 +1232,7 @@ func saveAnalyticsConfig(config *AnalyticsConfig) error {
 	return os.WriteFile(analyticsConfigPath, data, 0644)
 }
 
-// OAuth Callback Handler
-
-// OAuthCallback handles the OAuth callback redirect.
-// This endpoint receives the OAuth callback from Auth0 and redirects to the OOBE page
-// with the code and state parameters. This avoids the OOBE proxy issue.
-func (h *DeviceHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
-	// Get the code and state from query parameters
-	code := r.URL.Query().Get("code")
-	state := r.URL.Query().Get("state")
-	errorParam := r.URL.Query().Get("error")
-	errorDesc := r.URL.Query().Get("error_description")
-
-	// Build redirect URL to OOBE page with the OAuth parameters
-	// The OOBE JavaScript will handle the token exchange
-	redirectURL := "/oobe/index.html"
-	if code != "" && state != "" {
-		redirectURL = fmt.Sprintf("/oobe/index.html?code=%s&state=%s",
-			url.QueryEscape(code), url.QueryEscape(state))
-	} else if errorParam != "" {
-		redirectURL = fmt.Sprintf("/oobe/index.html?error=%s&error_description=%s",
-			url.QueryEscape(errorParam), url.QueryEscape(errorDesc))
-	}
-
-	logger.Info("OAuth callback received, redirecting to: %s", redirectURL)
-	http.Redirect(w, r, redirectURL, http.StatusFound)
-}
-
 // Camera Registration APIs
-
-// CameraRegistrationRequest represents the minimal camera registration request from OOBE.
-// The supervisor will automatically populate device-specific fields from internal sources.
-// The OAuth access token is passed in the request body (not Authorization header).
-type CameraRegistrationRequest struct {
-	AccessToken  string   `json:"access_token"` // Auth0 OAuth access token
-	LocationName string   `json:"location_name"`
-	Latitude     *float64 `json:"latitude,omitempty"`
-	Longitude    *float64 `json:"longitude,omitempty"`
-}
 
 // CameraRegistrationResponse represents the response from the platform.
 // Data can be either a map (on success) or a string (on error), so we use json.RawMessage.
@@ -1367,295 +1310,6 @@ func (h *DeviceHandler) ReRegisterCamera(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// RegisterCamera handles camera registration from OOBE using OAuth flow.
-// The OOBE sends minimal data (location_name, lat/lon) and the OAuth access token in the body.
-// The supervisor JWT token is used for authentication (in Authorization header).
-// The supervisor automatically populates device-specific fields from internal sources.
-func (h *DeviceHandler) RegisterCamera(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		api.WriteError(w, -1, "Method not allowed")
-		return
-	}
-
-	logger.Info("Camera registration requested from OOBE")
-
-	// Parse request from OOBE (includes OAuth access token in body)
-	var req CameraRegistrationRequest
-	if err := api.ParseJSONBody(r, &req); err != nil {
-		logger.Error("Failed to parse registration request: %v", err)
-		api.WriteError(w, -1, "Invalid request body")
-		return
-	}
-
-	// Validate required fields
-	if req.AccessToken == "" {
-		api.WriteError(w, -1, "OAuth access token required")
-		return
-	}
-	if req.LocationName == "" {
-		api.WriteError(w, -1, "Location name required")
-		return
-	}
-
-	accessToken := req.AccessToken
-
-	// Step 1: Call platform's generate-token endpoint to get camera API token
-	logger.Info("Step 1: Generating camera API token from platform")
-	tokenURL := platformURL("/api/v1/cameras/generate-token/")
-	logger.Error("Calling platform URL: GET %s", tokenURL)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	// Try GET first (current platform implementation)
-	tokenReq, err := http.NewRequest(http.MethodGet, tokenURL, nil)
-	if err != nil {
-		logger.Error("Failed to create token request: %v", err)
-		api.WriteError(w, -1, "Failed to create token request")
-		return
-	}
-	tokenReq.Header.Set("Authorization", "Bearer "+accessToken)
-	applyPlatformCommonHeaders(tokenReq)
-
-	tokenResp, err := client.Do(tokenReq)
-	if err != nil {
-		logger.Error("Failed to send token request: %v", err)
-		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
-		return
-	}
-	defer tokenResp.Body.Close()
-
-	tokenBody, err := io.ReadAll(tokenResp.Body)
-	if err != nil {
-		logger.Error("Failed to read token response: %v", err)
-		api.WriteError(w, -1, "Failed to read platform response")
-		return
-	}
-
-	logger.Info("Platform generate-token response status: %d, body: %s", tokenResp.StatusCode, string(tokenBody))
-
-	if tokenResp.StatusCode != http.StatusOK {
-		logger.Error("Platform generate-token failed with status %d: %s", tokenResp.StatusCode, string(tokenBody))
-		api.WriteError(w, -1, fmt.Sprintf("Failed to generate camera token: status %d", tokenResp.StatusCode))
-		return
-	}
-
-	var tokenData map[string]interface{}
-	if err := json.Unmarshal(tokenBody, &tokenData); err != nil {
-		logger.Error("Failed to parse token response: %v", err)
-		api.WriteError(w, -1, "Invalid token response from platform")
-		return
-	}
-
-	logger.Debug("Parsed token response: %+v", tokenData)
-
-	// Extract API token from response
-	// Platform returns: { "data": { "api_key": "...", "user_id": 1 } }
-	var apiToken string
-	var platformUserID interface{}
-	if data, ok := tokenData["data"].(map[string]interface{}); ok {
-		logger.Debug("Found 'data' field: %+v", data)
-		if token, ok := data["api_key"].(string); ok {
-			apiToken = token
-			logger.Debug("Found api_key: %s", apiToken)
-		} else {
-			logger.Debug("'api_key' field not found or not a string in data")
-		}
-		platformUserID = data["user_id"]
-		logger.Debug("user_id: %v", platformUserID)
-	} else {
-		logger.Debug("'data' field not found or not a map")
-	}
-
-	if apiToken == "" {
-		logger.Error("No API token in platform response. Full response: %s", string(tokenBody))
-		api.WriteError(w, -1, "Platform did not return API token")
-		return
-	}
-
-	logger.Info("Received camera API token from platform")
-
-	// Step 2: Collect device information from internal sources
-	deviceInfo := device.QueryDeviceInfo()
-
-	// Get MAC addresses
-	wifiMac := system.GetMAC("wlan0")
-	if wifiMac == "" {
-		wifiMac = "unknown"
-	}
-	ethMac := system.GetMAC("eth0")
-	if ethMac == "" {
-		ethMac = "unknown"
-	}
-
-	// Generate UUIDs for camera registration
-	// In production, these should be generated by the platform or retrieved from persistent storage
-	cameraUID := deviceInfo.SN // Use serial number as camera UID for now
-	cameraID := deviceInfo.SN  // Use serial number as camera ID for now
-
-	// Get current timestamp for registration fields
-	now := time.Now().Format(time.RFC3339)
-
-	// Extract user_id from platform token response
-	var userID interface{} = 1 // Default to 1 if not provided
-	if platformUserID != nil {
-		userID = platformUserID
-	}
-
-	// Build complete registration payload with device info
-	platformPayload := map[string]interface{}{
-		"uid":                     cameraUID,
-		"user_id":                 userID,
-		"camera_id":               cameraID,
-		"location_name":           req.LocationName,
-		"serial_number":           deviceInfo.SN,
-		"wifi_mac_address":        wifiMac,
-		"mac_address":             ethMac,
-		"device_model":            deviceInfo.Type,
-		"firmware_version":        deviceInfo.OSVersion,
-		"last_contacted":          now,
-		"installation_date":       now,
-		"creation_date":           now,
-		"last_subscribed":         now,
-		"notification_target_ids": []int{}, // Empty array by default
-	}
-
-	// Only include latitude/longitude if provided
-	if req.Latitude != nil {
-		platformPayload["latitude"] = *req.Latitude
-	}
-	if req.Longitude != nil {
-		platformPayload["longitude"] = *req.Longitude
-	}
-
-	// Marshal payload
-	jsonData, err := json.Marshal(platformPayload)
-	if err != nil {
-		logger.Error("Failed to marshal registration payload: %v", err)
-		api.WriteError(w, -1, "Failed to prepare registration request")
-		return
-	}
-
-	logger.Info("Step 2: Sending self-registration to platform: %s", string(jsonData))
-
-	// Step 3: Call platform's self-register endpoint with the API token
-	backendURL := platformURL("/api/v1/cameras/self-register/")
-	httpReq, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		logger.Error("Failed to create platform request: %v", err)
-		api.WriteError(w, -1, "Failed to create registration request")
-		return
-	}
-
-	// Set headers - use TPR-API-KEY for the camera API token
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("TPR-API-KEY", apiToken)
-	applyPlatformCommonHeaders(httpReq)
-
-	// Send request
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		logger.Error("Failed to send platform request: %v", err)
-		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger.Error("Failed to read platform response: %v", err)
-		api.WriteError(w, -1, "Failed to read platform response")
-		return
-	}
-
-	logger.Info("Platform self-register response status: %d, body: %s", resp.StatusCode, string(body))
-
-	// Parse platform response
-	var platformResp CameraRegistrationResponse
-	if err := json.Unmarshal(body, &platformResp); err != nil {
-		logger.Error("Failed to parse platform response: %v", err)
-		api.WriteError(w, -1, "Invalid platform response: "+string(body))
-		return
-	}
-
-	// Check if registration was successful (platform returns code 200 or 201 on success)
-	if platformResp.Code != 200 && platformResp.Code != 201 {
-		var errorDetail string
-		if len(platformResp.Data) > 0 {
-			if err := json.Unmarshal(platformResp.Data, &errorDetail); err != nil {
-				errorDetail = string(platformResp.Data)
-			}
-		}
-		errMsg := platformResp.Message
-		if errorDetail != "" {
-			errMsg = errMsg + ": " + errorDetail
-		}
-		logger.Error("Platform registration failed: code=%d, message=%s", platformResp.Code, errMsg)
-		api.WriteError(w, -1, errMsg)
-		return
-	}
-
-	// Parse data as map for successful response
-	var dataMap map[string]interface{}
-	if len(platformResp.Data) > 0 {
-		if err := json.Unmarshal(platformResp.Data, &dataMap); err != nil {
-			logger.Warning("Failed to parse platform data as map: %v", err)
-			dataMap = nil
-		}
-	}
-
-	// Extract camera UID and secret_key from response
-	var responseUID string
-	var secretKey string
-	if dataMap != nil {
-		if uid, ok := dataMap["uid"].(string); ok {
-			responseUID = uid
-		}
-		// Extract the secret_key from self-register response
-		// This is the permanent authentication key, NOT the temporary api_key from generate-token
-		if key, ok := dataMap["secret_key"].(string); ok {
-			secretKey = key
-			logger.Info("Received secret_key from platform self-register response")
-		} else {
-			logger.Warning("No secret_key in platform response, will not be able to authenticate future requests")
-		}
-	}
-
-	// Use response UID if provided, otherwise use the one we sent
-	finalUID := responseUID
-	if finalUID == "" {
-		finalUID = cameraUID
-	}
-
-	// Save platform info locally for future use
-	// IMPORTANT: Save the secret_key from self-register, NOT the temporary api_key from generate-token
-	registrationData := map[string]interface{}{
-		"platform_url":  platformBaseURL(),
-		"secret_key":    secretKey, // Use secret_key from self-register response
-		"camera_uid":    finalUID,
-		"user_id":       userID,
-		"registered_at": time.Now().Format(time.RFC3339),
-		"camera_data":   dataMap,
-	}
-
-	registrationJSON, _ := json.MarshalIndent(registrationData, "", "  ")
-	if err := device.SavePlatformInfo(string(registrationJSON)); err != nil {
-		logger.Warning("Failed to save platform info locally: %v", err)
-		// Don't fail the request, registration was successful
-	}
-
-	logger.Info("Camera registered successfully with platform, uid=%s", finalUID)
-
-	// Return success with platform response data
-	api.WriteSuccess(w, map[string]interface{}{
-		"code":    platformResp.Code,
-		"message": platformResp.Message,
-		"uid":     finalUID,
-		"user_id": userID,
-		"data":    dataMap,
-	})
-}
-
 // selfRegisterCamera calls the Authority Alert self-register API with PUT method.
 func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 	// Authority Alert backend URL
@@ -1711,429 +1365,7 @@ func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 	return nil
 }
 
-// GenerateCameraToken proxies the generate-token request to the platform API.
-// This avoids CORS issues when calling the platform API from the browser.
-// The OAuth access token is passed in the Authorization header.
-func (h *DeviceHandler) GenerateCameraToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		api.WriteError(w, -1, "Method not allowed")
-		return
-	}
-
-	logger.Info("Generate camera token requested")
-
-	// Get OAuth access token from request body
-	var req struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := api.ParseJSONBody(r, &req); err != nil {
-		logger.Error("Failed to parse generate-token request: %v", err)
-		api.WriteError(w, -1, "Invalid request body")
-		return
-	}
-
-	if req.AccessToken == "" {
-		api.WriteError(w, -1, "Access token required")
-		return
-	}
-
-	// Call platform API to generate camera token
-	backendURL := platformURL("/api/v1/cameras/generate-token/")
-	logger.Error("Calling platform API: %s", backendURL)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	doRequest := func(method string) (*http.Response, []byte, error) {
-		var bodyReader io.Reader
-		if method == http.MethodPost {
-			// Some backends/WAF configs treat empty-body POST oddly; send a minimal JSON object.
-			bodyReader = bytes.NewBufferString("{}")
-		}
-		httpReq, err := http.NewRequest(method, backendURL, bodyReader)
-		if err != nil {
-			return nil, nil, err
-		}
-		if method == http.MethodPost {
-			httpReq.Header.Set("Content-Type", "application/json")
-		}
-		httpReq.Header.Set("Authorization", "Bearer "+req.AccessToken)
-		applyPlatformCommonHeaders(httpReq)
-
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer resp.Body.Close()
-		b, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return resp, nil, readErr
-		}
-		return resp, b, nil
-	}
-
-	// Prefer GET (matches current frontend expectation), but fall back to POST for stricter setups.
-	resp, body, err := doRequest(http.MethodGet)
-	if err != nil {
-		logger.Error("Failed to send platform request: %v", err)
-		api.WriteError(w, -1, "Failed to connect to platform: "+err.Error())
-		return
-	}
-
-	if resp.StatusCode != http.StatusOK && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusMethodNotAllowed) {
-		// Retry once as POST; some deployments protect GET endpoints or route them through HTML views.
-		logger.Warning("Platform generate-token returned %d for GET; retrying as POST", resp.StatusCode)
-		resp2, body2, err2 := doRequest(http.MethodPost)
-		if err2 == nil {
-			resp, body = resp2, body2
-		}
-	}
-
-	logger.Info("Platform generate-token response status: %d, body: %s", resp.StatusCode, string(body))
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Error("Platform generate-token failed with status %d: %s", resp.StatusCode, string(body))
-		api.WriteError(w, -1, fmt.Sprintf("Platform returned status %d", resp.StatusCode))
-		return
-	}
-
-	var platformResp map[string]interface{}
-	if err := json.Unmarshal(body, &platformResp); err != nil {
-		logger.Error("Failed to parse platform response: %v", err)
-		api.WriteError(w, -1, "Invalid platform response")
-		return
-	}
-
-	api.WriteSuccess(w, platformResp)
-}
-
-// StartQRRegistration initiates a QR code-based camera registration flow.
-// The supervisor handles the entire process: QR scan -> parse data -> self-register.
-// OOBE frontend polls GetQRRegistrationStatus for progress updates.
-func (h *DeviceHandler) StartQRRegistration(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		api.WriteError(w, -1, "Method not allowed")
-		return
-	}
-
-	var req QRRegistrationRequest
-	if err := api.ParseJSONBody(r, &req); err != nil {
-		api.WriteError(w, -1, "Invalid request body")
-		return
-	}
-
-	if req.LocationName == "" {
-		api.WriteError(w, -1, "Location name required")
-		return
-	}
-
-	qrRegMutex.Lock()
-	defer qrRegMutex.Unlock()
-
-	// If registration is already in progress, return current status (allow frontend to resume polling)
-	if qrRegState.Status == "scanning" || qrRegState.Status == "detected" || qrRegState.Status == "registering" {
-		logger.Info("QR registration already in progress (status=%s), returning current state", qrRegState.Status)
-		response := map[string]interface{}{
-			"status":  qrRegState.Status,
-			"message": qrRegState.Message,
-		}
-		if qrRegState.StartedAt != nil {
-			response["started_at"] = qrRegState.StartedAt.Format(time.RFC3339)
-		}
-		api.WriteSuccess(w, response)
-		return
-	}
-
-	// Store request for use in goroutine
-	qrRegReq = &req
-
-	// Initialize state
-	now := time.Now()
-	qrRegState = &QRRegistrationState{
-		Status:    "scanning",
-		Message:   "Scanning for QR code...",
-		StartedAt: &now,
-		cancel:    make(chan struct{}),
-	}
-
-	// Start QR scan and registration in background
-	go h.runQRRegistration()
-
-	logger.Info("QR registration started, location: %s", req.LocationName)
-
-	api.WriteSuccess(w, map[string]interface{}{
-		"status":     qrRegState.Status,
-		"message":    qrRegState.Message,
-		"started_at": qrRegState.StartedAt.Format(time.RFC3339),
-	})
-}
-
-// GetQRRegistrationStatus returns the current state of QR registration.
-func (h *DeviceHandler) GetQRRegistrationStatus(w http.ResponseWriter, r *http.Request) {
-	qrRegMutex.Lock()
-	defer qrRegMutex.Unlock()
-
-	response := map[string]interface{}{
-		"status":  qrRegState.Status,
-		"message": qrRegState.Message,
-	}
-
-	if qrRegState.StartedAt != nil {
-		response["started_at"] = qrRegState.StartedAt.Format(time.RFC3339)
-	}
-	if qrRegState.QRData != nil {
-		response["qr_data"] = qrRegState.QRData
-	}
-	if qrRegState.Result != nil {
-		response["result"] = qrRegState.Result
-	}
-
-	api.WriteSuccess(w, response)
-}
-
-// CancelQRRegistration cancels an active QR registration.
-func (h *DeviceHandler) CancelQRRegistration(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		api.WriteError(w, -1, "Method not allowed")
-		return
-	}
-
-	qrRegMutex.Lock()
-	defer qrRegMutex.Unlock()
-
-	if qrRegState.Status != "scanning" && qrRegState.Status != "detected" && qrRegState.Status != "registering" {
-		api.WriteError(w, -1, "No active QR registration to cancel")
-		return
-	}
-
-	// Signal cancellation
-	if qrRegState.cancel != nil {
-		close(qrRegState.cancel)
-	}
-
-	// Kill QR reader process if running
-	if qrRegState.cmd != nil && qrRegState.cmd.Process != nil {
-		logger.Info("Killing QR reader process")
-		qrRegState.cmd.Process.Kill()
-	}
-
-	qrRegState.Status = "idle"
-	qrRegState.Message = "Cancelled"
-	logger.Info("QR registration cancelled")
-
-	api.WriteSuccess(w, map[string]interface{}{
-		"status":  "cancelled",
-		"message": "QR registration cancelled",
-	})
-}
-
-// runQRRegistration runs the QR scan and registration process in a goroutine.
-func (h *DeviceHandler) runQRRegistration() {
-	// Step 1: Run QR reader
-	logger.Info("Starting QR reader for registration")
-
-	args := []string{
-		"--timeout", "60",
-		"--max-results", "1",
-		"--keyframes-only", "0",
-		"--schema", "camera_pairing",
-	}
-
-	cmd := exec.Command(qrReaderPath, args...)
-
-	// Store cmd for potential cancellation
-	qrRegMutex.Lock()
-	qrRegState.cmd = cmd
-	cancelChan := qrRegState.cancel
-	qrRegMutex.Unlock()
-
-	// Set up pipes
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		h.setQRRegError("Failed to start QR scan: " + err.Error())
-		return
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		h.setQRRegError("Failed to start QR scan: " + err.Error())
-		return
-	}
-
-	// Start process
-	if err := cmd.Start(); err != nil {
-		h.setQRRegError("Failed to start QR reader: " + err.Error())
-		return
-	}
-
-	// Read output
-	var stdoutBuf, stderrBuf bytes.Buffer
-	stdoutDone := make(chan struct{})
-	stderrDone := make(chan struct{})
-
-	go func() {
-		stdoutBuf.ReadFrom(stdoutPipe)
-		close(stdoutDone)
-	}()
-	go func() {
-		stderrBuf.ReadFrom(stderrPipe)
-		close(stderrDone)
-	}()
-
-	// Wait for reads to complete
-	<-stdoutDone
-	<-stderrDone
-
-	// Wait for process
-	err = cmd.Wait()
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		}
-	}
-
-	// Check if cancelled
-	select {
-	case <-cancelChan:
-		logger.Info("QR registration was cancelled")
-		return
-	default:
-	}
-
-	stdout := strings.TrimSpace(stdoutBuf.String())
-	stderr := stderrBuf.String()
-
-	logger.Info("QR reader stdout: %s", stdout)
-	if stderr != "" {
-		logger.Info("QR reader stderr: %s", stderr)
-	}
-
-	// Handle exit codes
-	switch exitCode {
-	case 1:
-		h.setQRRegStatus("timeout", "QR scan timed out - no QR code found", nil, nil)
-		return
-	case 2:
-		// Schema validation failed or other error - parse output for details
-		break
-	case 3:
-		// Cancelled - already handled above
-		return
-	}
-
-	// Parse QR reader output
-	if stdout == "" {
-		h.setQRRegError("QR reader produced no output")
-		return
-	}
-
-	var qrResult struct {
-		Success        bool   `json:"success"`
-		Reason         string `json:"reason,omitempty"`
-		QRCodes        []struct {
-			Data      string `json:"data"`
-			Validated bool   `json:"validated"`
-		} `json:"qr_codes"`
-		Count          int    `json:"count"`
-		Error          string `json:"error,omitempty"`
-		QRData         string `json:"qr_data,omitempty"`
-		SchemaExpected string `json:"schema_expected,omitempty"`
-	}
-
-	if err := json.Unmarshal([]byte(stdout), &qrResult); err != nil {
-		h.setQRRegError("Failed to parse QR reader output: " + err.Error())
-		return
-	}
-
-	// Handle validation failure
-	if qrResult.Reason == "validation_failed" {
-		h.setQRRegError("Invalid QR code - expected camera pairing QR from Authority Alert app")
-		return
-	}
-
-	if !qrResult.Success || qrResult.Count == 0 || len(qrResult.QRCodes) == 0 {
-		errMsg := "No QR code detected"
-		if qrResult.Error != "" {
-			errMsg = qrResult.Error
-		} else if qrResult.Reason != "" {
-			errMsg = qrResult.Reason
-		}
-		h.setQRRegError(errMsg)
-		return
-	}
-
-	// Step 2: Parse QR data
-	qrDataStr := qrResult.QRCodes[0].Data
-	logger.Info("QR code detected: %s", qrDataStr)
-
-	var qrData map[string]interface{}
-	if err := json.Unmarshal([]byte(qrDataStr), &qrData); err != nil {
-		h.setQRRegError("Invalid QR code format - expected JSON with api_key and user_id")
-		return
-	}
-
-	// Validate required fields
-	apiKey, ok := qrData["api_key"].(string)
-	if !ok || apiKey == "" {
-		h.setQRRegError("QR code missing api_key field")
-		return
-	}
-
-	userID := qrData["user_id"]
-	if userID == nil {
-		h.setQRRegError("QR code missing user_id field")
-		return
-	}
-
-	// Update state to detected
-	h.setQRRegStatus("detected", "QR code detected, processing...", qrData, nil)
-	logger.Info("QR code parsed: api_key=%s..., user_id=%v", apiKey[:min(8, len(apiKey))], userID)
-
-	// Step 3: Register with platform
-	h.setQRRegStatus("registering", "Registering camera with platform...", qrData, nil)
-
-	// Get stored request
-	qrRegMutex.Lock()
-	req := qrRegReq
-	qrRegMutex.Unlock()
-
-	if req == nil {
-		h.setQRRegError("Registration request not found")
-		return
-	}
-
-	result, err := h.selfRegisterWithAPIKey(apiKey, userID, req.LocationName, req.Latitude, req.Longitude)
-	if err != nil {
-		h.setQRRegError("Registration failed: " + err.Error())
-		return
-	}
-
-	// Success!
-	h.setQRRegStatus("complete", "Camera registered successfully!", qrData, result)
-	logger.Info("QR registration completed successfully")
-}
-
-// setQRRegStatus updates the QR registration state.
-func (h *DeviceHandler) setQRRegStatus(status, message string, qrData, result map[string]interface{}) {
-	qrRegMutex.Lock()
-	defer qrRegMutex.Unlock()
-
-	qrRegState.Status = status
-	qrRegState.Message = message
-	if qrData != nil {
-		qrRegState.QRData = qrData
-	}
-	if result != nil {
-		qrRegState.Result = result
-	}
-}
-
-// setQRRegError sets the QR registration state to error.
-func (h *DeviceHandler) setQRRegError(message string) {
-	h.setQRRegStatus("error", message, nil, nil)
-	logger.Error("QR registration error: %s", message)
-}
-
-// selfRegisterWithAPIKey performs camera self-registration using the API key from QR code.
+// selfRegisterWithAPIKey performs camera self-registration using an API key.
 // This is similar to RegisterCamera but skips the OAuth token exchange since we already have the API key.
 func (h *DeviceHandler) selfRegisterWithAPIKey(apiKey string, userID interface{}, locationName string, lat, lon *float64) (map[string]interface{}, error) {
 	// Collect device information (same as RegisterCamera)
@@ -2273,7 +1505,7 @@ func (h *DeviceHandler) selfRegisterWithAPIKey(apiKey string, userID interface{}
 		// Don't fail - registration was successful
 	}
 
-	logger.Info("Camera registered successfully via QR, uid=%s", finalUID)
+	logger.Info("Camera registered successfully via API key, uid=%s", finalUID)
 
 	return map[string]interface{}{
 		"code":    platformResp.Code,
@@ -2371,12 +1603,15 @@ func (h *DeviceHandler) StartCodeRegistration(w http.ResponseWriter, r *http.Req
 	now := time.Now()
 	expiresAt := now.Add(codeExpiryMins * time.Minute)
 	codeRegState = &CodeRegistrationState{
-		Status:    "generating",
-		Message:   "Registering code with platform...",
-		ClaimCode: code,
-		ExpiresAt: &expiresAt,
-		StartedAt: &now,
-		cancel:    make(chan struct{}),
+		Status:            "generating",
+		Message:           "Registering code with platform...",
+		ClaimCode:         code,
+		ExpiresAt:         &expiresAt,
+		StartedAt:         &now,
+		InternetAvailable: true,
+		LastError:         "",
+		RetryCount:        0,
+		cancel:            make(chan struct{}),
 	}
 
 	// Start registration and polling in background
@@ -2400,8 +1635,9 @@ func (h *DeviceHandler) GetCodeRegistrationStatus(w http.ResponseWriter, r *http
 	defer codeRegMutex.Unlock()
 
 	response := map[string]interface{}{
-		"status":  codeRegState.Status,
-		"message": codeRegState.Message,
+		"status":             codeRegState.Status,
+		"message":            codeRegState.Message,
+		"internet_available": codeRegState.InternetAvailable,
 	}
 
 	if codeRegState.ClaimCode != "" {
@@ -2416,6 +1652,12 @@ func (h *DeviceHandler) GetCodeRegistrationStatus(w http.ResponseWriter, r *http
 	}
 	if codeRegState.Result != nil {
 		response["result"] = codeRegState.Result
+	}
+	if codeRegState.LastError != "" {
+		response["last_error"] = codeRegState.LastError
+	}
+	if codeRegState.RetryCount > 0 {
+		response["retry_count"] = codeRegState.RetryCount
 	}
 
 	api.WriteSuccess(w, response)
@@ -2451,6 +1693,12 @@ func (h *DeviceHandler) CancelCodeRegistration(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// checkInternetAvailable performs a quick internet connectivity check.
+func checkInternetAvailable() bool {
+	status := system.CheckInternet()
+	return status.Available
+}
+
 // runCodeRegistration runs the code registration and polling process in a goroutine.
 func (h *DeviceHandler) runCodeRegistration() {
 	codeRegMutex.Lock()
@@ -2458,6 +1706,7 @@ func (h *DeviceHandler) runCodeRegistration() {
 	expiresAt := codeRegState.ExpiresAt
 	cancelChan := codeRegState.cancel
 	req := codeRegReq
+	codeRegState.InternetAvailable = true // Assume available initially
 	codeRegMutex.Unlock()
 
 	if req == nil {
@@ -2465,16 +1714,28 @@ func (h *DeviceHandler) runCodeRegistration() {
 		return
 	}
 
-	// Step 1: Register the code with the platform
-	logger.Info("Registering claim code %s with platform", formatClaimCode(code))
-
 	serialNumber := system.GetSerialNumber()
 	if serialNumber == "" {
 		h.setCodeRegError("Failed to get device serial number")
 		return
 	}
 
-	// Build registration payload
+	client := &http.Client{Timeout: 30 * time.Second}
+	retryCount := 0
+	const maxRetryBackoff = 30 // Max backoff seconds
+
+	// Helper to calculate exponential backoff delay
+	getBackoffDelay := func(retries int) time.Duration {
+		delay := 1 << retries // 1, 2, 4, 8, 16, 32...
+		if delay > maxRetryBackoff {
+			delay = maxRetryBackoff
+		}
+		return time.Duration(delay) * time.Second
+	}
+
+	// Step 1: Register the code with the platform (with retry on network errors)
+	logger.Info("Registering claim code %s with platform", formatClaimCode(code))
+
 	registerPayload := map[string]interface{}{
 		"serial_number": serialNumber,
 		"claim_code":    code,
@@ -2486,40 +1747,85 @@ func (h *DeviceHandler) runCodeRegistration() {
 		return
 	}
 
-	// Call platform's camera register endpoint
 	registerURL := platformURL("/api/v2/camera/register/")
-	httpReq, err := http.NewRequest("POST", registerURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		h.setCodeRegError("Failed to create registration request")
-		return
-	}
+	registered := false
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	applyPlatformCommonHeaders(httpReq)
+	for !registered {
+		select {
+		case <-cancelChan:
+			logger.Info("Code registration was cancelled during initial registration")
+			return
+		default:
+		}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		h.setCodeRegError("Failed to connect to platform: " + err.Error())
-		return
-	}
-	defer resp.Body.Close()
+		// Check if expired
+		if time.Now().After(*expiresAt) {
+			h.setCodeRegStatus("expired", "Registration code expired", nil)
+			logger.Info("Code registration expired during initial registration")
+			return
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		h.setCodeRegError("Failed to read platform response")
-		return
-	}
+		// Check internet connectivity
+		internetOK := checkInternetAvailable()
+		h.updateInternetStatus(internetOK, "")
 
-	logger.Info("Platform register response status: %d, body: %s", resp.StatusCode, string(body))
+		if !internetOK {
+			logger.Warning("No internet connection, waiting before retry...")
+			h.setCodeRegStatusWithRetry("generating", "No internet connection. Retrying...", retryCount)
+			retryCount++
+			time.Sleep(getBackoffDelay(retryCount))
+			continue
+		}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		h.setCodeRegError(fmt.Sprintf("Platform registration failed with status %d", resp.StatusCode))
-		return
+		httpReq, err := http.NewRequest("POST", registerURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			h.setCodeRegError("Failed to create registration request")
+			return
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		applyPlatformCommonHeaders(httpReq)
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			logger.Warning("Failed to connect to platform: %v, will retry...", err)
+			h.updateInternetStatus(false, err.Error())
+			h.setCodeRegStatusWithRetry("generating", "Connection failed. Retrying...", retryCount)
+			retryCount++
+			time.Sleep(getBackoffDelay(retryCount))
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			logger.Warning("Failed to read platform response: %v, will retry...", err)
+			retryCount++
+			time.Sleep(getBackoffDelay(retryCount))
+			continue
+		}
+
+		logger.Info("Platform register response status: %d, body: %s", resp.StatusCode, string(body))
+
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+			registered = true
+			retryCount = 0 // Reset retry count on success
+			h.updateInternetStatus(true, "")
+		} else if resp.StatusCode >= 500 {
+			// Server error, retry
+			logger.Warning("Platform server error (status %d), will retry...", resp.StatusCode)
+			retryCount++
+			time.Sleep(getBackoffDelay(retryCount))
+			continue
+		} else {
+			// Client error (4xx), don't retry
+			h.setCodeRegError(fmt.Sprintf("Platform registration failed with status %d", resp.StatusCode))
+			return
+		}
 	}
 
 	// Update state to active (code registered, waiting for claim)
-	h.setCodeRegStatus("active", "Code registered. Waiting for user to claim...", nil)
+	h.setCodeRegStatus("active", "Code ready. Waiting for user to claim...", nil)
 
 	// Step 2: Poll for claim status until claimed, expired, or cancelled
 	ticker := time.NewTicker(codePollIntervalSecs * time.Second)
@@ -2541,6 +1847,21 @@ func (h *DeviceHandler) runCodeRegistration() {
 				return
 			}
 
+			// Check internet connectivity
+			internetOK := checkInternetAvailable()
+			h.updateInternetStatus(internetOK, "")
+
+			if !internetOK {
+				logger.Warning("No internet during polling, will keep trying...")
+				retryCount++
+				// Update message but keep status as active
+				codeRegMutex.Lock()
+				codeRegState.Message = "No internet. We'll keep trying in the background."
+				codeRegState.RetryCount = retryCount
+				codeRegMutex.Unlock()
+				continue
+			}
+
 			// Poll claim status
 			statusReq, err := http.NewRequest("GET", statusURL, nil)
 			if err != nil {
@@ -2552,6 +1873,12 @@ func (h *DeviceHandler) runCodeRegistration() {
 			statusResp, err := client.Do(statusReq)
 			if err != nil {
 				logger.Warning("Failed to poll claim status: %v", err)
+				h.updateInternetStatus(false, err.Error())
+				retryCount++
+				codeRegMutex.Lock()
+				codeRegState.Message = "Connection issue. Retrying..."
+				codeRegState.RetryCount = retryCount
+				codeRegMutex.Unlock()
 				continue
 			}
 
@@ -2562,6 +1889,16 @@ func (h *DeviceHandler) runCodeRegistration() {
 				continue
 			}
 
+			// Reset retry count on successful poll
+			if retryCount > 0 {
+				retryCount = 0
+				h.updateInternetStatus(true, "")
+				codeRegMutex.Lock()
+				codeRegState.Message = "Code ready. Waiting for user to claim..."
+				codeRegState.RetryCount = 0
+				codeRegMutex.Unlock()
+			}
+
 			logger.Debug("Claim status response: %s", string(statusBody))
 
 			// Parse response
@@ -2569,10 +1906,11 @@ func (h *DeviceHandler) runCodeRegistration() {
 				Code    int    `json:"code"`
 				Message string `json:"message"`
 				Data    struct {
-					Claimed   bool   `json:"claimed"`
-					APIKey    string `json:"api_key"`
-					SecretKey string `json:"secret_key"`
-					UserID    int    `json:"user_id"`
+					Claimed         bool   `json:"claimed"`
+					APIKeyConfirmed bool   `json:"api_key_confirmed"`
+					APIKey          string `json:"api_key"`
+					SecretKey       string `json:"secret_key"`
+					UserID          int    `json:"user_id"`
 				} `json:"data"`
 			}
 
@@ -2581,9 +1919,9 @@ func (h *DeviceHandler) runCodeRegistration() {
 				continue
 			}
 
-			// Check if claimed
-			if statusData.Data.Claimed {
-				logger.Info("Camera claimed! Saving API key...")
+			// Check if fully set up (claimed and confirmed)
+			if statusData.Data.Claimed && statusData.Data.APIKeyConfirmed {
+				logger.Info("Camera already claimed and confirmed, completing registration")
 
 				// Get the API key (prefer secret_key, fall back to api_key)
 				apiKey := statusData.Data.SecretKey
@@ -2591,36 +1929,159 @@ func (h *DeviceHandler) runCodeRegistration() {
 					apiKey = statusData.Data.APIKey
 				}
 
-				if apiKey != "" {
-					// Save platform info locally
-					registrationData := map[string]interface{}{
-						"platform_url":  platformBaseURL(),
-						"secret_key":    apiKey,
-						"camera_uid":    serialNumber,
-						"user_id":       statusData.Data.UserID,
-						"registered_at": time.Now().Format(time.RFC3339),
+				// Save platform info locally and complete
+				registrationData := map[string]interface{}{
+					"platform_url":  platformBaseURL(),
+					"secret_key":    apiKey,
+					"camera_uid":    serialNumber,
+					"user_id":       statusData.Data.UserID,
+					"registered_at": time.Now().Format(time.RFC3339),
+					"location_name": req.LocationName,
+				}
+				if req.Latitude != nil {
+					registrationData["latitude"] = *req.Latitude
+				}
+				if req.Longitude != nil {
+					registrationData["longitude"] = *req.Longitude
+				}
+
+				registrationJSON, _ := json.MarshalIndent(registrationData, "", "  ")
+				if err := device.SavePlatformInfo(string(registrationJSON)); err != nil {
+					logger.Warning("Failed to save platform info locally: %v", err)
+				}
+
+				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
+				logger.Info("Code registration completed successfully (already confirmed)")
+				return
+			}
+
+			// Check if claimed but needs confirmation
+			if statusData.Data.Claimed && !statusData.Data.APIKeyConfirmed {
+				logger.Info("Camera claimed, need to confirm API key...")
+
+				// Get the API key (prefer secret_key, fall back to api_key)
+				apiKey := statusData.Data.SecretKey
+				if apiKey == "" {
+					apiKey = statusData.Data.APIKey
+				}
+
+				// Update status to show we're confirming
+				codeRegMutex.Lock()
+				codeRegState.Message = "Setting up..."
+				codeRegMutex.Unlock()
+
+				// Step 3: Confirm the code was successfully read/claimed (with retries)
+				logger.Info("Confirming claim for serial %s with api_key", serialNumber)
+				confirmURL := platformURL(fmt.Sprintf("/api/v1/claim_camera/%s/confirm", serialNumber))
+
+				// Build confirm payload with api_key in JSON body
+				confirmPayload := map[string]string{"api_key": apiKey}
+				confirmJSON, err := json.Marshal(confirmPayload)
+				if err != nil {
+					h.setCodeRegError("Failed to prepare confirmation request")
+					return
+				}
+				logger.Debug("Confirm payload: %s", string(confirmJSON))
+
+				confirmed := false
+				confirmRetries := 0
+				const maxConfirmRetries = 5
+
+				for !confirmed && confirmRetries < maxConfirmRetries {
+					// Create fresh buffer for each attempt (buffer is consumed after request)
+					confirmReq, err := http.NewRequest("POST", confirmURL, bytes.NewReader(confirmJSON))
+					if err != nil {
+						h.setCodeRegError("Failed to create confirmation request")
+						return
+					}
+					confirmReq.Header.Set("Content-Type", "application/json")
+					applyPlatformCommonHeaders(confirmReq)
+
+					confirmResp, err := client.Do(confirmReq)
+					if err != nil {
+						logger.Warning("Failed to confirm claim (attempt %d): %v", confirmRetries+1, err)
+						confirmRetries++
+						time.Sleep(getBackoffDelay(confirmRetries))
+						continue
 					}
 
-					registrationJSON, _ := json.MarshalIndent(registrationData, "", "  ")
-					if err := device.SavePlatformInfo(string(registrationJSON)); err != nil {
-						logger.Warning("Failed to save platform info locally: %v", err)
+					confirmBody, err := io.ReadAll(confirmResp.Body)
+					confirmResp.Body.Close()
+					if err != nil {
+						logger.Warning("Failed to read confirmation response: %v", err)
+						confirmRetries++
+						time.Sleep(getBackoffDelay(confirmRetries))
+						continue
+					}
+
+					logger.Info("Platform confirm response status: %d, body: %s", confirmResp.StatusCode, string(confirmBody))
+
+					if confirmResp.StatusCode == http.StatusOK || confirmResp.StatusCode == http.StatusCreated {
+						confirmed = true
+					} else if confirmResp.StatusCode >= 500 {
+						// Server error, retry
+						confirmRetries++
+						time.Sleep(getBackoffDelay(confirmRetries))
+						continue
+					} else {
+						// Client error, don't retry
+						h.setCodeRegError(fmt.Sprintf("Platform confirmation failed with status %d", confirmResp.StatusCode))
+						return
 					}
 				}
 
-				// Complete the self-registration with full device info
-				result, err := h.selfRegisterWithAPIKey(apiKey, statusData.Data.UserID, req.LocationName, req.Latitude, req.Longitude)
-				if err != nil {
-					h.setCodeRegError("Camera claimed but registration failed: " + err.Error())
+				if !confirmed {
+					h.setCodeRegError("Failed to confirm claim after multiple attempts")
 					return
 				}
 
-				// Success!
-				h.setCodeRegStatus("claimed", "Camera registered successfully!", result)
+				// Save platform info locally
+				// Note: For claim code registration, the platform already registered the camera
+				// during the claim/confirm flow, so we just need to save the credentials locally.
+				registrationData := map[string]interface{}{
+					"platform_url":   platformBaseURL(),
+					"secret_key":     apiKey,
+					"camera_uid":     serialNumber,
+					"user_id":        statusData.Data.UserID,
+					"registered_at":  time.Now().Format(time.RFC3339),
+					"location_name":  req.LocationName,
+				}
+				if req.Latitude != nil {
+					registrationData["latitude"] = *req.Latitude
+				}
+				if req.Longitude != nil {
+					registrationData["longitude"] = *req.Longitude
+				}
+
+				registrationJSON, _ := json.MarshalIndent(registrationData, "", "  ")
+				if err := device.SavePlatformInfo(string(registrationJSON)); err != nil {
+					logger.Warning("Failed to save platform info locally: %v", err)
+				}
+
+				// Success! Return the registration data as result
+				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
 				logger.Info("Code registration completed successfully")
 				return
 			}
 		}
 	}
+}
+
+// updateInternetStatus updates the internet availability status in state.
+func (h *DeviceHandler) updateInternetStatus(available bool, lastError string) {
+	codeRegMutex.Lock()
+	defer codeRegMutex.Unlock()
+	codeRegState.InternetAvailable = available
+	codeRegState.LastError = lastError
+}
+
+// setCodeRegStatusWithRetry updates status with retry count.
+func (h *DeviceHandler) setCodeRegStatusWithRetry(status, message string, retryCount int) {
+	codeRegMutex.Lock()
+	defer codeRegMutex.Unlock()
+	codeRegState.Status = status
+	codeRegState.Message = message
+	codeRegState.RetryCount = retryCount
 }
 
 // setCodeRegStatus updates the code registration state.

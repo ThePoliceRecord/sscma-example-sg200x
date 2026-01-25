@@ -16,6 +16,12 @@ sscma-qrcode-reader
 *.a
 *.so
 
+# Installed binary in rootfs (built artifact)
+rootfs/usr/bin/qr-reader
+
+# opkg packages
+*.ipk
+
 # Editor files
 .vscode/
 .idea/

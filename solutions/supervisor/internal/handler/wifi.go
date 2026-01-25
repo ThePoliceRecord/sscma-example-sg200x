@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,18 @@ const (
 	WifiEnableOpen    = 1 // Has WiFi, enabled
 	WifiEnableDisable = 2 // No WiFi
 )
+
+// OOBE flag file path
+const OOBEFlagFile = "/etc/oobe/flag"
+
+// isOOBEActive checks if OOBE mode is currently active.
+// During OOBE, we keep the AP on so users can access the setup page.
+func isOOBEActive() bool {
+	_, err := os.Stat(OOBEFlagFile)
+	active := err == nil
+	logger.Info("OOBE check: file=%s, active=%v, err=%v", OOBEFlagFile, active, err)
+	return active
+}
 
 // WiFiHandler handles WiFi management API requests.
 type WiFiHandler struct {
@@ -83,6 +96,14 @@ func (h *WiFiHandler) initWiFi() {
 	h.mu.Unlock()
 
 	logger.Info("WiFi initialized: STA=%d, AP=%d", sta, ap)
+
+	// Pre-scan WiFi networks so they're ready when user views WiFi list
+	// This improves UX especially during OOBE - networks are already available
+	go func() {
+		time.Sleep(3 * time.Second) // Wait for wpa_supplicant to be ready
+		logger.Info("Pre-scanning WiFi networks for better UX")
+		h.scanNetworks()
+	}()
 }
 
 // Stop stops the WiFi monitoring goroutine.
@@ -90,13 +111,32 @@ func (h *WiFiHandler) Stop() {
 	close(h.stopChan)
 }
 
-// monitorWiFi was removed - automatic background scanning disabled.
-// WiFi scans are now only triggered on explicit user request via GetWiFiInfoList API
-// to prevent disconnect/reconnect issues caused by active scanning.
+// monitorWiFi monitors hostapd health and restarts it if needed.
+// This ensures the AP stays running during OOBE even if hostapd crashes.
 func (h *WiFiHandler) monitorWiFi() {
-	// Background monitoring disabled to prevent WiFi disconnections
-	// Scans only happen when user explicitly requests WiFi list
-	<-h.stopChan
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-h.stopChan:
+			return
+		case <-ticker.C:
+			h.mu.RLock()
+			apShouldRun := h.apEnable == 1
+			h.mu.RUnlock()
+
+			// During OOBE, always ensure AP is running
+			if isOOBEActive() {
+				apShouldRun = true
+			}
+
+			if apShouldRun && !system.IsProcessRunning("hostapd") {
+				logger.Warning("hostapd not running but should be - restarting AP")
+				go h.wifiMgr.StartAP()
+			}
+		}
+	}
 }
 
 // getWifiEnable returns the WiFi enable status
@@ -342,13 +382,21 @@ func (h *WiFiHandler) scanNetworks() {
 	scanList := h.getScanList(connectedList)
 
 	// Stop AP mode if either ethernet or WiFi is connected
+	// BUT only if OOBE is not active - during OOBE, keep AP on for setup access
 	ethConnected := etherInfo["status"] == NetworkStatusConnected
 	wifiConnected := staInfo != nil && staInfo["status"] == NetworkStatusConnected
+	oobeActive := isOOBEActive()
+
+	logger.Info("AP stop check: ethConnected=%v, wifiConnected=%v, apEnable=%d, oobeActive=%v",
+		ethConnected, wifiConnected, h.apEnable, oobeActive)
 
 	h.mu.Lock()
-	if (ethConnected || wifiConnected) && h.apEnable == 1 {
+	if (ethConnected || wifiConnected) && h.apEnable == 1 && !oobeActive {
+		logger.Info("Stopping AP because network is connected and OOBE is not active")
 		go h.wifiMgr.StopAP()
 		h.apEnable = 0
+	} else if oobeActive && h.apEnable == 1 {
+		logger.Info("Keeping AP on during OOBE even though network is connected")
 	}
 
 	h.networkInfo = map[string]interface{}{
@@ -388,6 +436,31 @@ func (h *WiFiHandler) GetWiFiInfoList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteSuccess(w, response)
+}
+
+// GetConnectionStatus returns only the current WiFi connection status (fast, no scan).
+// This is useful for polling connection status after initiating a connection.
+func (h *WiFiHandler) GetConnectionStatus(w http.ResponseWriter, r *http.Request) {
+	staInfo := h.getStaCurrentInfo()
+
+	if staInfo == nil {
+		api.WriteSuccess(w, map[string]interface{}{
+			"connected": false,
+			"ssid":      "",
+			"ip":        "",
+			"status":    NetworkStatusDisconnected,
+			"signal":    -100,
+		})
+		return
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{
+		"connected": staInfo["status"] == NetworkStatusConnected,
+		"ssid":      staInfo["ssid"],
+		"ip":        staInfo["ip"],
+		"status":    staInfo["status"],
+		"signal":    staInfo["signal"],
+	})
 }
 
 // ConnectWiFiRequest represents a WiFi connect request.
@@ -555,7 +628,13 @@ func (h *WiFiHandler) SwitchWiFi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.staEnable = req.Mode
-	h.apEnable = req.Mode
+	// During OOBE, always keep AP enabled regardless of request
+	if isOOBEActive() {
+		h.apEnable = 1
+		logger.Info("SwitchWiFi: Keeping AP enabled during OOBE (ignoring mode=%d for AP)", req.Mode)
+	} else {
+		h.apEnable = req.Mode
+	}
 	h.mu.Unlock()
 
 	enable := req.Mode == 1

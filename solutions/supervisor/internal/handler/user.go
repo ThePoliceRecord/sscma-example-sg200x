@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"bufio"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,8 +13,6 @@ import (
 	"supervisor/internal/api"
 	"supervisor/internal/auth"
 	"supervisor/pkg/logger"
-
-	"github.com/GehirnInc/crypt"
 )
 
 // Default username for the system

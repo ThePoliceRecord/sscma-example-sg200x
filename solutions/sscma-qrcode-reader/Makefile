@@ -52,6 +52,43 @@ build-riscv:
 		$(LDFLAGS) -o $(BUILD_DIR)/$(BIN_NAME)
 	@echo "Build complete: $(BUILD_DIR)/$(BIN_NAME)"
 
+# Install to rootfs overlay (for packaging)
+ROOTFS_DIR := rootfs
+INSTALL_PATH := $(ROOTFS_DIR)/usr/bin/qr-reader
+
+.PHONY: install
+install: build-riscv
+	@echo "Installing $(BIN_NAME) to $(INSTALL_PATH)..."
+	@mkdir -p $(ROOTFS_DIR)/usr/bin
+	@cp $(BUILD_DIR)/$(BIN_NAME) $(INSTALL_PATH)
+	@chmod 755 $(INSTALL_PATH)
+	@echo "Installed: $(INSTALL_PATH)"
+
+# Create opkg package
+.PHONY: opkg
+opkg: build-riscv
+	@echo "Creating opkg package..."
+	@rm -rf $(BUILD_DIR)/opkg-stage
+	@mkdir -p $(BUILD_DIR)/opkg-stage/CONTROL
+	@mkdir -p $(BUILD_DIR)/opkg-stage/usr/bin
+	@# Copy CONTROL files
+	@cp opkg/CONTROL/control $(BUILD_DIR)/opkg-stage/CONTROL/
+	@if [ -f opkg/CONTROL/postinst ]; then \
+		cp opkg/CONTROL/postinst $(BUILD_DIR)/opkg-stage/CONTROL/; \
+		chmod 755 $(BUILD_DIR)/opkg-stage/CONTROL/postinst; \
+	fi
+	@# Install the binary
+	@cp $(BUILD_DIR)/$(BIN_NAME) $(BUILD_DIR)/opkg-stage/usr/bin/qr-reader
+	@chmod 755 $(BUILD_DIR)/opkg-stage/usr/bin/qr-reader
+	@# Create the opkg package
+	@cd $(BUILD_DIR)/opkg-stage && \
+		tar -czf ../data.tar.gz --owner=0 --group=0 ./usr && \
+		tar -czf ../control.tar.gz --owner=0 --group=0 -C CONTROL . && \
+		echo "2.0" > ../debian-binary && \
+		cd .. && ar r qr-reader_$(VERSION)_riscv64.ipk debian-binary control.tar.gz data.tar.gz
+	@rm -f $(BUILD_DIR)/debian-binary $(BUILD_DIR)/control.tar.gz $(BUILD_DIR)/data.tar.gz
+	@echo "opkg package created: $(BUILD_DIR)/qr-reader_$(VERSION)_riscv64.ipk"
+
 # Clean build artifacts
 .PHONY: clean
 clean:
@@ -66,8 +103,10 @@ fmt:
 .PHONY: help
 help:
 	@echo "Available targets:"
-	@echo "  all       - Build the project (default)"
+	@echo "  all         - Build the project (default)"
 	@echo "  build-riscv - Cross-compile for RISC-V"
-	@echo "  clean     - Remove build directory"
-	@echo "  fmt       - Format code with clang-format"
-	@echo "  help      - Show this help message"
+	@echo "  install     - Build and install to rootfs/usr/bin/qr-reader"
+	@echo "  opkg        - Build and create opkg package (.ipk)"
+	@echo "  clean       - Remove build directory"
+	@echo "  fmt         - Format code with clang-format"
+	@echo "  help        - Show this help message"

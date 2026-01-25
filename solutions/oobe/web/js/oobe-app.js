@@ -185,7 +185,12 @@ class OOBEApp {
     
     // WiFi scan abort controller
     this.wifiScanController = null;
-    
+
+    // QR registration state
+    this.jmuxerInstance = null;
+    this.cameraWebSocket = null;
+    this.qrStatusPollInterval = null;
+
     // Set up auth failure handler
     this.api.onAuthFailure = (message) => this.handleAuthFailure(message);
     
@@ -576,15 +581,43 @@ class OOBEApp {
       }
       
       if (result.success && result.data) {
-        // The API returns wifiInfoList, not networks
-        const networks = result.data.wifiInfoList || [];
-        console.log('Found', networks.length, 'WiFi networks');
-        
+        // API returns two lists:
+        // - connectedWifiInfoList: saved/previously connected networks
+        // - wifiInfoList: scanned available networks
+        const savedNetworks = result.data.connectedWifiInfoList || [];
+        const scannedNetworks = result.data.wifiInfoList || [];
+
+        console.log('Saved networks:', savedNetworks.length, 'Scanned networks:', scannedNetworks.length);
+        console.log('Raw saved networks:', JSON.stringify(savedNetworks, null, 2));
+        console.log('Raw scanned networks:', JSON.stringify(scannedNetworks, null, 2));
+
+        // Merge both lists, avoiding duplicates (prefer saved network info)
+        const ssidSet = new Set();
+        const allNetworks = [];
+
+        // Add saved networks first (they have connection status)
+        savedNetworks.forEach(network => {
+          if (network.ssid && !ssidSet.has(network.ssid)) {
+            ssidSet.add(network.ssid);
+            allNetworks.push(network);
+          }
+        });
+
+        // Add scanned networks that aren't already in saved list
+        scannedNetworks.forEach(network => {
+          if (network.ssid && !ssidSet.has(network.ssid)) {
+            ssidSet.add(network.ssid);
+            allNetworks.push(network);
+          }
+        });
+
+        console.log('Found', allNetworks.length, 'total WiFi networks');
+
         // If no networks found and we haven't exhausted retries, wait and try again
-        if (networks.length === 0 && retryCount < maxRetries) {
+        if (allNetworks.length === 0 && retryCount < maxRetries) {
           console.log(`No networks found, retrying in ${retryDelay}ms...`);
           this.showLoading(`Scanning for WiFi networks... (attempt ${retryCount + 2}/${maxRetries + 1})`);
-          
+
           // Use abortable timeout
           await new Promise((resolve, reject) => {
             const timeout = setTimeout(resolve, retryDelay);
@@ -596,28 +629,38 @@ class OOBEApp {
             console.log('Retry cancelled');
             return;
           });
-          
+
           return this.scanWiFiNetworks(retryCount + 1);
         }
-        
-        if (networks.length === 0) {
+
+        if (allNetworks.length === 0) {
           // Show message but don't error - user can rescan
           this.displayWiFiNetworks([]);
           this.hideLoading();
           this.showError('No WiFi networks found after multiple scans. Click "Rescan Networks" to try again, or check your WiFi adapter.');
           return;
         }
-        
+
         // Transform the data to match our expected format
-        const transformedNetworks = networks.map(network => ({
+        // status field: 1 = Disconnected, 2 = Connecting, 3 = Connected
+        const transformedNetworks = allNetworks.map(network => ({
           ssid: network.ssid,
           signal: network.signal,
           security: network.auth === 0 ? 'Open' : 'WPA2',
-          connected: network.connectedStatus === 1,
+          connected: network.status === 3, // 3 = NetworkStatusConnected
           bssid: network.bssid,
           frequency: network.frequency
         }));
-        
+
+        console.log('WiFi networks after transform:', transformedNetworks.map(n => ({ ssid: n.ssid, connected: n.connected })));
+
+        // Sort networks: connected first, then by signal strength
+        transformedNetworks.sort((a, b) => {
+          if (a.connected && !b.connected) return -1;
+          if (!a.connected && b.connected) return 1;
+          return b.signal - a.signal; // Higher signal (less negative) first
+        });
+
         this.displayWiFiNetworks(transformedNetworks);
       } else {
         // Standardized error handling
@@ -672,26 +715,52 @@ class OOBEApp {
       return;
     }
 
+    // Find if there's an already connected network
+    const connectedNetwork = networks.find(n => n.connected);
+
     networks.forEach(network => {
       const item = document.createElement('div');
       item.className = 'wifi-item';
+
+      // Add connected class for visual highlighting
+      if (network.connected) {
+        item.className += ' connected';
+      }
+
       item.onclick = (event) => this.selectWiFiNetwork(network.ssid, network.security, event);
 
       const signalStrength = this.getSignalStrength(network.signal);
-      
+
       item.innerHTML = `
         <div class="wifi-info">
           <div class="wifi-ssid">${this.escapeHtml(network.ssid)}</div>
           <div class="wifi-details">
             ${network.security} • Signal: ${signalStrength}
-            ${network.connected ? ' • <strong>Connected</strong>' : ''}
           </div>
         </div>
         <div class="wifi-signal">${this.getSignalIcon(network.signal)}</div>
       `;
 
       listEl.appendChild(item);
+
+      // Auto-select the connected network
+      if (network.connected) {
+        this.selectWiFiNetwork(network.ssid, network.security, { currentTarget: item });
+      }
     });
+
+    // Update button text based on connection status
+    const connectBtn = document.querySelector('#step-4 .btn-primary');
+    if (connectBtn) {
+      if (connectedNetwork) {
+        connectBtn.textContent = 'Continue →';
+        // Reset onclick to just continue since we're already connected
+        connectBtn.onclick = () => this.showStep(5);
+      } else {
+        connectBtn.textContent = 'Connect →';
+        connectBtn.onclick = () => this.handleWiFiNext();
+      }
+    }
   }
 
   selectWiFiNetwork(ssid, security, event) {
@@ -706,14 +775,43 @@ class OOBEApp {
       event.currentTarget.classList.add('selected');
     }
 
-    // Show password input if secured
+    // Check if selected network is already connected
+    const isConnected = event?.currentTarget?.classList.contains('connected');
+
+    // Show password input if secured and not already connected
     const passwordGroup = document.getElementById('wifi-password-group');
-    if (security !== 'Open') {
+    const passwordInput = document.getElementById('wifi-password');
+    if (security !== 'Open' && !isConnected) {
       passwordGroup.classList.remove('hidden');
-      document.getElementById('wifi-password').focus();
+      passwordInput.focus();
     } else {
       passwordGroup.classList.add('hidden');
       this.setupData.wifiPassword = '';
+    }
+
+    // Update button text and handler based on connection status
+    const connectBtn = document.querySelector('#step-4 .btn-primary');
+    if (connectBtn) {
+      if (isConnected) {
+        connectBtn.textContent = 'Continue →';
+        connectBtn.onclick = () => this.showStep(5);
+      } else {
+        connectBtn.textContent = 'Connect →';
+        connectBtn.onclick = () => this.handleWiFiNext();
+      }
+    }
+  }
+
+  togglePasswordVisibility(inputId, button) {
+    const input = document.getElementById(inputId);
+    if (input.type === 'password') {
+      input.type = 'text';
+      button.classList.add('visible');
+      button.title = 'Hide password';
+    } else {
+      input.type = 'password';
+      button.classList.remove('visible');
+      button.title = 'Show password';
     }
   }
 
@@ -983,7 +1081,7 @@ class OOBEApp {
     }
 
     const password = document.getElementById('wifi-password').value;
-    
+
     if (this.setupData.wifiSecurity !== 'Open' && !password) {
       this.showError('Please enter the WiFi password');
       return;
@@ -999,14 +1097,87 @@ class OOBEApp {
       this.setupData.wifiSecurity
     );
 
-    this.hideLoading();
-
     if (!result.success) {
+      this.hideLoading();
       this.showError('Failed to connect to WiFi: ' + (result.error || 'Unknown error'));
       return;
     }
 
-    this.showStep(5);
+    // Connection is async - wait and check if it actually connected
+    this.showLoading('Verifying connection...');
+    await this.waitForWiFiConnection(this.setupData.wifiSSID);
+  }
+
+  async waitForWiFiConnection(ssid, maxAttempts = 15, intervalMs = 1000) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      this.showLoading(`Verifying connection... (${attempt}/${maxAttempts})`);
+
+      // Wait before checking (give time for connection to establish)
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+
+      // Use fast connection status endpoint (no caching, real-time status)
+      const result = await this.api.getConnectionStatus();
+      if (result.success && result.data) {
+        console.log(`[WiFi Check ${attempt}]`, result.data);
+
+        // Check if connected to our network
+        if (result.data.connected && result.data.ssid === ssid) {
+          console.log(`[WiFi] Connected to ${ssid} with IP: ${result.data.ip}`);
+          this.hideLoading();
+          this.showWiFiConnectionSuccess(ssid, result.data.ip || 'Obtained via DHCP');
+          return;
+        }
+
+        // status 2 = connecting, keep polling
+        if (result.data.status === 2) {
+          console.log(`[WiFi] Still connecting to ${ssid}...`);
+          continue;
+        }
+
+        // status 1 = disconnected, but give more time before failing
+        if (result.data.status === 1 && attempt > 10) {
+          console.log(`[WiFi] Connection failed for ${ssid} after ${attempt} attempts`);
+          this.hideLoading();
+          this.showError('WiFi connection failed. Please check the password and try again.');
+          return;
+        }
+      }
+    }
+
+    // Timeout - connection took too long
+    this.hideLoading();
+    this.showError('WiFi connection timed out. Please try again.');
+  }
+
+  showWiFiConnectionSuccess(ssid, ipAddress) {
+    const listEl = document.getElementById('wifi-list');
+    listEl.innerHTML = `
+      <div class="wifi-connection-success">
+        <div class="success-icon">✓</div>
+        <h3>Connected Successfully!</h3>
+        <div class="connection-details">
+          <div class="detail-row">
+            <span class="detail-label">Network:</span>
+            <span class="detail-value">${this.escapeHtml(ssid)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">IP Address:</span>
+            <span class="detail-value">${this.escapeHtml(ipAddress)}</span>
+          </div>
+        </div>
+        <p class="success-message">Your device is now connected to the internet.</p>
+      </div>
+    `;
+
+    // Hide password group since we're connected
+    document.getElementById('wifi-password-group').classList.add('hidden');
+
+    // Update button to show "Continue" instead of "Connect"
+    const connectBtn = document.querySelector('#step-4 .btn-primary');
+    if (connectBtn) {
+      connectBtn.textContent = 'Continue →';
+      connectBtn.onclick = () => this.showStep(5);
+    }
   }
 
   async handleWiFiSkip() {
@@ -1107,6 +1278,376 @@ class OOBEApp {
       .replace(/\//g, '_')
       .replace(/=+$/, '');
   }
+
+  // ======================
+  // QR Registration Methods
+  // ======================
+
+  /**
+   * Initialize camera stream for QR scanning preview
+   */
+  async initCameraStream() {
+    try {
+      // Get WebSocket URL from supervisor API
+      const result = await this.api.request('/api/deviceMgr/getCameraWebsocketUrl');
+      if (!result.success) {
+        console.error('Failed to get camera WebSocket URL:', result.error);
+        return;
+      }
+
+      // Use channel 2 (640x480 @ 15fps - same as QR reader uses)
+      let wsUrl = result.data.websocketUrl;
+      wsUrl += (wsUrl.includes('?') ? '&' : '?') + 'channel=2';
+
+      console.log('Connecting to camera WebSocket:', wsUrl);
+
+      // Initialize jmuxer (already included via jmuxer.min.js)
+      this.jmuxerInstance = new jmuxer({
+        node: 'qr-camera-preview',
+        mode: 'video',
+        flushingTime: 0,
+        fps: 15,
+        clearBuffer: true,
+      });
+
+      // Connect WebSocket
+      this.cameraWebSocket = new WebSocket(wsUrl);
+      this.cameraWebSocket.binaryType = 'arraybuffer';
+      this.cameraWebSocket.onopen = () => console.log('Camera WebSocket connected');
+      this.cameraWebSocket.onerror = (e) => console.error('Camera WebSocket error:', e);
+      this.cameraWebSocket.onmessage = (evt) => {
+        const buffer = new Uint8Array(evt.data);
+        // Skip channel ID byte (first), skip timestamp (last 8 bytes)
+        const frameData = buffer.subarray(1, buffer.length - 8);
+        if (this.jmuxerInstance) {
+          this.jmuxerInstance.feed({ video: frameData });
+        }
+      };
+    } catch (error) {
+      console.error('Failed to initialize camera stream:', error);
+    }
+  }
+
+  /**
+   * Stop camera stream and clean up resources
+   */
+  stopCameraStream() {
+    if (this.cameraWebSocket) {
+      this.cameraWebSocket.close();
+      this.cameraWebSocket = null;
+    }
+    if (this.jmuxerInstance) {
+      this.jmuxerInstance.destroy();
+      this.jmuxerInstance = null;
+    }
+  }
+
+  /**
+   * Start QR code registration flow
+   */
+  async startQRRegistration() {
+    // Get location name from step 3 data or sessionStorage
+    const locationName = this.setupData.deviceName || sessionStorage.getItem('oobe_device_name') || 'Unknown Location';
+
+    // Show camera preview section, hide registration options
+    document.getElementById('registration-options').classList.add('hidden');
+    document.getElementById('qr-scan-section').classList.remove('hidden');
+
+    // Start camera stream for visual feedback
+    await this.initCameraStream();
+
+    // Tell supervisor to start QR registration flow
+    const result = await this.api.request('/api/deviceMgr/startQRRegistration', 'POST', {
+      location_name: locationName,
+      latitude: this.setupData.geolocation?.latitude,
+      longitude: this.setupData.geolocation?.longitude
+    });
+
+    if (!result.success) {
+      this.showError('Failed to start QR scan: ' + (result.error || 'Unknown error'));
+      this.cancelQRScan();
+      return;
+    }
+
+    console.log('QR registration started');
+
+    // Start polling for status updates (every 500ms)
+    this.qrStatusPollInterval = setInterval(() => this.pollQRStatus(), 500);
+  }
+
+  /**
+   * Poll for QR registration status updates
+   */
+  async pollQRStatus() {
+    const result = await this.api.request('/api/deviceMgr/qrRegistrationStatus');
+    if (!result.success) return;
+
+    const status = result.data;
+    this.updateQRStatusUI(status);
+
+    // Handle terminal states
+    if (status.status === 'complete') {
+      this.stopPolling();
+      this.stopCameraStream();
+      // Show success and continue button
+      document.getElementById('qr-scan-section').classList.add('hidden');
+      document.getElementById('registration-success').classList.remove('hidden');
+      document.getElementById('continue-after-registration-btn').classList.remove('hidden');
+      console.log('QR registration completed:', status.result);
+    } else if (status.status === 'error' || status.status === 'timeout') {
+      this.stopPolling();
+      this.stopCameraStream();
+      this.showError(status.message || 'QR scan failed');
+      this.showRegistrationOptions();
+    }
+  }
+
+  /**
+   * Update QR scan status UI
+   */
+  updateQRStatusUI(status) {
+    const statusEl = document.getElementById('qr-scan-status');
+    if (!statusEl) return;
+
+    const messages = {
+      'idle': 'Ready to scan',
+      'scanning': 'Scanning for QR code...',
+      'detected': 'QR code detected! Processing...',
+      'registering': 'Registering camera with platform...',
+      'complete': 'Registration complete!',
+      'timeout': 'Scan timed out - no QR code found',
+      'error': status.message || 'An error occurred'
+    };
+
+    const textEl = statusEl.querySelector('.status-text');
+    if (textEl) {
+      textEl.textContent = messages[status.status] || status.message || status.status;
+    }
+  }
+
+  /**
+   * Cancel QR scan and return to registration options
+   */
+  cancelQRScan() {
+    this.stopPolling();
+    this.stopCameraStream();
+    // Tell supervisor to cancel (fire and forget)
+    this.api.request('/api/deviceMgr/cancelQRRegistration', 'POST');
+    this.showRegistrationOptions();
+  }
+
+  /**
+   * Stop status polling
+   */
+  stopPolling() {
+    if (this.qrStatusPollInterval) {
+      clearInterval(this.qrStatusPollInterval);
+      this.qrStatusPollInterval = null;
+    }
+  }
+
+  /**
+   * Show registration options, hide QR scan section
+   */
+  showRegistrationOptions() {
+    document.getElementById('qr-scan-section').classList.add('hidden');
+    document.getElementById('code-registration-section')?.classList.add('hidden');
+    document.getElementById('registration-options').classList.remove('hidden');
+  }
+
+  // ======================
+  // Code Registration Methods
+  // ======================
+
+  /**
+   * Start code-based registration flow
+   */
+  async startCodeRegistration() {
+    // Get location name from step 3 data or sessionStorage
+    const locationName = this.setupData.deviceName || sessionStorage.getItem('oobe_device_name') || 'Unknown Location';
+
+    // Show code registration section, hide registration options
+    document.getElementById('registration-options').classList.add('hidden');
+    document.getElementById('code-registration-section').classList.remove('hidden');
+
+    // Update UI to show generating state
+    this.updateCodeRegistrationUI({
+      status: 'generating',
+      message: 'Generating registration code...'
+    });
+
+    // Start code registration via supervisor
+    const result = await this.api.startCodeRegistration(
+      locationName,
+      this.setupData.geolocation?.latitude,
+      this.setupData.geolocation?.longitude
+    );
+
+    if (!result.success) {
+      this.showError('Failed to start code registration: ' + (result.error || 'Unknown error'));
+      this.showRegistrationOptions();
+      return;
+    }
+
+    console.log('Code registration started:', result.data);
+
+    // Display the code and start countdown
+    this.displayRegistrationCode(result.data.claim_code_formatted, result.data.expires_at);
+
+    // Start polling for status updates (every 2 seconds)
+    this.codeStatusPollInterval = setInterval(() => this.pollCodeStatus(), 2000);
+  }
+
+  /**
+   * Display the registration code with countdown timer
+   */
+  displayRegistrationCode(formattedCode, expiresAt) {
+    const codeDisplay = document.getElementById('registration-code-display');
+    const timerDisplay = document.getElementById('code-expiry-timer');
+    const statusText = document.getElementById('code-status-text');
+
+    if (codeDisplay) {
+      codeDisplay.textContent = formattedCode;
+    }
+
+    if (statusText) {
+      statusText.textContent = 'Enter this code in the Authority Alert mobile app';
+    }
+
+    // Start countdown timer
+    this.startCodeExpiryTimer(expiresAt);
+  }
+
+  /**
+   * Start the countdown timer for code expiry
+   */
+  startCodeExpiryTimer(expiresAtStr) {
+    const expiresAt = new Date(expiresAtStr);
+    const timerDisplay = document.getElementById('code-expiry-timer');
+
+    // Clear any existing timer
+    if (this.codeExpiryInterval) {
+      clearInterval(this.codeExpiryInterval);
+    }
+
+    const updateTimer = () => {
+      const now = new Date();
+      const remaining = Math.max(0, Math.floor((expiresAt - now) / 1000));
+
+      if (remaining <= 0) {
+        if (timerDisplay) {
+          timerDisplay.textContent = 'Expired';
+          timerDisplay.classList.add('expired');
+        }
+        clearInterval(this.codeExpiryInterval);
+        return;
+      }
+
+      const minutes = Math.floor(remaining / 60);
+      const seconds = remaining % 60;
+      const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+      if (timerDisplay) {
+        timerDisplay.textContent = `Expires in ${timeStr}`;
+        // Add warning class when less than 2 minutes
+        if (remaining < 120) {
+          timerDisplay.classList.add('warning');
+        } else {
+          timerDisplay.classList.remove('warning');
+        }
+      }
+    };
+
+    // Update immediately and then every second
+    updateTimer();
+    this.codeExpiryInterval = setInterval(updateTimer, 1000);
+  }
+
+  /**
+   * Poll for code registration status updates
+   */
+  async pollCodeStatus() {
+    const result = await this.api.getCodeRegistrationStatus();
+    if (!result.success) return;
+
+    const status = result.data;
+    this.updateCodeRegistrationUI(status);
+
+    // Handle terminal states
+    if (status.status === 'claimed') {
+      this.stopCodePolling();
+      // Show success and continue button
+      document.getElementById('code-registration-section').classList.add('hidden');
+      document.getElementById('registration-success').classList.remove('hidden');
+      document.getElementById('continue-after-registration-btn').classList.remove('hidden');
+      console.log('Code registration completed:', status.result);
+    } else if (status.status === 'error' || status.status === 'expired') {
+      this.stopCodePolling();
+      this.showError(status.message || 'Code registration failed');
+      this.showRegistrationOptions();
+    }
+  }
+
+  /**
+   * Update the code registration UI based on status
+   */
+  updateCodeRegistrationUI(status) {
+    const statusText = document.getElementById('code-status-text');
+    const statusIcon = document.getElementById('code-status-icon');
+
+    const messages = {
+      'idle': 'Ready',
+      'generating': 'Generating registration code...',
+      'active': 'Enter this code in the Authority Alert mobile app',
+      'claimed': 'Camera registered successfully!',
+      'expired': 'Code expired. Please try again.',
+      'error': status.message || 'An error occurred'
+    };
+
+    const icons = {
+      'idle': '',
+      'generating': '⏳',
+      'active': '📱',
+      'claimed': '✓',
+      'expired': '⏰',
+      'error': '❌'
+    };
+
+    if (statusText) {
+      statusText.textContent = messages[status.status] || status.message || status.status;
+    }
+    if (statusIcon) {
+      statusIcon.textContent = icons[status.status] || '';
+    }
+  }
+
+  /**
+   * Cancel code registration and return to options
+   */
+  cancelCodeRegistration() {
+    this.stopCodePolling();
+    // Tell supervisor to cancel (fire and forget)
+    this.api.cancelCodeRegistration();
+    this.showRegistrationOptions();
+  }
+
+  /**
+   * Stop code registration polling and timers
+   */
+  stopCodePolling() {
+    if (this.codeStatusPollInterval) {
+      clearInterval(this.codeStatusPollInterval);
+      this.codeStatusPollInterval = null;
+    }
+    if (this.codeExpiryInterval) {
+      clearInterval(this.codeExpiryInterval);
+      this.codeExpiryInterval = null;
+    }
+  }
+
+  // ======================
+  // OAuth Methods
+  // ======================
 
   /**
    * Initiate OAuth sign-in flow with Auth0 using PKCE

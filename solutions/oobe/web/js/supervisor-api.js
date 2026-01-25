@@ -6,14 +6,15 @@
 class SupervisorAPI {
   constructor(baseUrl = null, tokenManager = null) {
     // Auto-detect supervisor URL
-    // Try current hostname first, then localhost
+    // Use same protocol as current page (HTTP for AP hotspot, HTTPS for Ethernet)
     if (!baseUrl) {
       const hostname = window.location.hostname;
+      const protocol = window.location.protocol; // 'http:' or 'https:'
       // If accessing via IP or hostname, use that for supervisor
       if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-        this.baseUrl = `https://${hostname}`;
+        this.baseUrl = `${protocol}//${hostname}`;
       } else {
-        this.baseUrl = 'https://localhost';
+        this.baseUrl = `${protocol}//localhost`;
       }
     } else {
       this.baseUrl = baseUrl;
@@ -246,6 +247,10 @@ class SupervisorAPI {
     return this.request('/api/wifiMgr/getWiFiInfoList');
   }
 
+  async getConnectionStatus() {
+    return this.request('/api/wifiMgr/getConnectionStatus');
+  }
+
   async connectWiFi(ssid, password, security = 'WPA2') {
     return this.request('/api/wifiMgr/connectWiFi', 'POST', {
       ssid,
@@ -402,6 +407,38 @@ class SupervisorAPI {
         reject(new Error('QR scan polling timeout'));
       }, (timeout + 5) * 1000);
     });
+  }
+
+  // ========== Code Registration ==========
+
+  /**
+   * Start code-based camera registration
+   * @param {string} locationName - Camera location name
+   * @param {number} [lat] - Optional latitude
+   * @param {number} [lng] - Optional longitude
+   * @returns {Promise} {success: boolean, data: {status, claim_code, claim_code_formatted, expires_at}}
+   */
+  async startCodeRegistration(locationName, lat = null, lng = null) {
+    const body = { location_name: locationName };
+    if (lat !== null) body.latitude = lat;
+    if (lng !== null) body.longitude = lng;
+    return this.request('/api/deviceMgr/startCodeRegistration', 'POST', body);
+  }
+
+  /**
+   * Get current code registration status
+   * @returns {Promise} {success: boolean, data: {status, claim_code, claim_code_formatted, expires_at, result}}
+   */
+  async getCodeRegistrationStatus() {
+    return this.request('/api/deviceMgr/codeRegistrationStatus');
+  }
+
+  /**
+   * Cancel active code registration
+   * @returns {Promise} {success: boolean, data: {status, message}}
+   */
+  async cancelCodeRegistration() {
+    return this.request('/api/deviceMgr/cancelCodeRegistration', 'POST');
   }
 }
 

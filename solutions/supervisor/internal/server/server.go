@@ -315,11 +315,22 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/oauthCallback", deviceHandler.OAuthCallback)
 	apiHandler.HandleFunc("/api/deviceMgr/generateCameraToken", deviceHandler.GenerateCameraToken)
 
+	// QR-based camera registration (OOBE)
+	apiHandler.HandleFunc("/api/deviceMgr/startQRRegistration", deviceHandler.StartQRRegistration)
+	apiHandler.HandleFunc("/api/deviceMgr/qrRegistrationStatus", deviceHandler.GetQRRegistrationStatus)
+	apiHandler.HandleFunc("/api/deviceMgr/cancelQRRegistration", deviceHandler.CancelQRRegistration)
+
+	// Code-based camera registration (OOBE)
+	apiHandler.HandleFunc("/api/deviceMgr/startCodeRegistration", deviceHandler.StartCodeRegistration)
+	apiHandler.HandleFunc("/api/deviceMgr/codeRegistrationStatus", deviceHandler.GetCodeRegistrationStatus)
+	apiHandler.HandleFunc("/api/deviceMgr/cancelCodeRegistration", deviceHandler.CancelCodeRegistration)
+
 	// Camera/Video management
 	apiHandler.HandleFunc("/api/channels", handler.GetChannels)
 
 	// WiFi management
 	apiHandler.HandleFunc("/api/wifiMgr/getWiFiInfoList", s.wifiHandler.GetWiFiInfoList)
+	apiHandler.HandleFunc("/api/wifiMgr/getConnectionStatus", s.wifiHandler.GetConnectionStatus)
 	apiHandler.HandleFunc("/api/wifiMgr/connectWiFi", s.wifiHandler.ConnectWiFi)
 	apiHandler.HandleFunc("/api/wifiMgr/disconnectWiFi", s.wifiHandler.DisconnectWiFi)
 	apiHandler.HandleFunc("/api/wifiMgr/forgetWiFi", s.wifiHandler.ForgetWiFi)

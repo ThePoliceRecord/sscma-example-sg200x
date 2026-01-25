@@ -333,10 +333,10 @@ static bool validate_schema(const char* data, const char* schema_name) {
     if (!data || strlen(data) == 0) {
         return false;
     }
-    
+
     if (strcmp(schema_name, "authority_config") == 0) {
         // Check for required fields in authority config
-        return (strstr(data, "\"type\"") != NULL && 
+        return (strstr(data, "\"type\"") != NULL &&
                 strstr(data, "authority_alert") != NULL);
     } else if (strcmp(schema_name, "wifi_config") == 0) {
         // Check for ssid field
@@ -344,8 +344,12 @@ static bool validate_schema(const char* data, const char* schema_name) {
     } else if (strcmp(schema_name, "device_pairing") == 0) {
         // Check for device_id field
         return (strstr(data, "\"device_id\"") != NULL);
+    } else if (strcmp(schema_name, "camera_pairing") == 0) {
+        // Check for api_key and user_id fields (Authority Alert platform pairing)
+        return (strstr(data, "\"api_key\"") != NULL &&
+                strstr(data, "\"user_id\"") != NULL);
     }
-    
+
     // Unknown schema - accept any data
     return true;
 }
@@ -436,7 +440,7 @@ int main(int argc, char* argv[]) {
                 printf("  --timeout <seconds>      Scan timeout (default: 30)\n");
                 printf("  --max-results <count>    Maximum QR codes (default: 1, 0=unlimited)\n");
                 printf("  --schema <name>          Validate against schema\n");
-                printf("                           (authority_config, wifi_config, device_pairing)\n");
+                printf("                           (authority_config, wifi_config, device_pairing, camera_pairing)\n");
                 printf("  --dump-last <path.pgm>   Write last decoded grayscale frame as PGM on exit\n");
                 printf("  --help                   Show this help\n");
                 return 0;

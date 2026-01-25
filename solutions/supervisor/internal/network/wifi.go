@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"supervisor/internal/system"
+	"supervisor/pkg/logger"
 )
 
 // Configuration paths
@@ -101,6 +102,7 @@ func (m *WiFiManager) StartAP() error {
 	}
 
 	if system.IsProcessRunning("hostapd") {
+		logger.Info("hostapd already running, skipping start")
 		return nil
 	}
 
@@ -112,17 +114,31 @@ func (m *WiFiManager) StartAP() error {
 	exec.Command("ifconfig", "wlan1", "up").Run()
 
 	// Start hostapd
-	return exec.Command("hostapd", "-B", HostAPDConf).Run()
+	logger.Info("Starting hostapd on wlan1 with config: %s", HostAPDConf)
+	err := exec.Command("hostapd", "-B", HostAPDConf).Run()
+	if err != nil {
+		logger.Error("Failed to start hostapd: %v", err)
+		return err
+	}
+
+	// Configure IP address for AP interface
+	time.Sleep(500 * time.Millisecond)
+	exec.Command("ifconfig", "wlan1", "192.168.16.1", "netmask", "255.255.255.0").Run()
+
+	logger.Info("hostapd started successfully on wlan1")
+	return nil
 }
 
 // StopAP stops the WiFi access point mode.
 func (m *WiFiManager) StopAP() error {
+	logger.Info("Stopping AP - killing hostapd and bringing down wlan1")
 	system.StopProcessByName("hostapd", 9)
 	exec.Command("ifconfig", "wlan1", "0").Run()
 	exec.Command("ifconfig", "wlan1", "down").Run()
 	time.Sleep(500 * time.Millisecond)
 	system.RunServiceAsync("S80dnsmasq", "restart")
 	system.RunServiceAsync("S49ntp", "restart")
+	logger.Info("AP stopped")
 	return nil
 }
 

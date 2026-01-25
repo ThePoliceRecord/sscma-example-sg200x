@@ -80,39 +80,55 @@
           <form onsubmit="event.preventDefault(); oobeApp.handlePasswordNext();">
             <div class="form-group">
               <label class="form-label" for="old-password">Current Password</label>
-              <input 
-                type="password" 
-                id="old-password" 
-                class="form-input" 
-                placeholder="Enter current password"
-                autocomplete="current-password"
-              />
-              <div class="form-help">Leave blank for first-time setup (default password will be used)</div>
+              <div class="password-input-wrapper">
+                <input
+                  type="password"
+                  id="old-password"
+                  class="form-input"
+                  placeholder="Enter current password"
+                  autocomplete="current-password"
+                  value="recamera"
+                />
+                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('old-password', this)" title="Show password">
+                  <span class="eye-icon">👁</span>
+                </button>
+              </div>
+              <small class="form-hint">Default password: recamera</small>
             </div>
 
             <div class="form-group">
               <label class="form-label" for="new-password">New Password</label>
-              <input 
-                type="password" 
-                id="new-password" 
-                class="form-input" 
-                placeholder="Enter new password"
-                autocomplete="new-password"
-                required
-              />
+              <div class="password-input-wrapper">
+                <input
+                  type="password"
+                  id="new-password"
+                  class="form-input"
+                  placeholder="Enter new password"
+                  autocomplete="new-password"
+                  required
+                />
+                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('new-password', this)" title="Show password">
+                  <span class="eye-icon">👁</span>
+                </button>
+              </div>
               <div class="form-help">Minimum 8 characters</div>
             </div>
 
             <div class="form-group">
               <label class="form-label" for="confirm-password">Confirm Password</label>
-              <input 
-                type="password" 
-                id="confirm-password" 
-                class="form-input" 
-                placeholder="Confirm new password"
-                autocomplete="new-password"
-                required
-              />
+              <div class="password-input-wrapper">
+                <input
+                  type="password"
+                  id="confirm-password"
+                  class="form-input"
+                  placeholder="Confirm new password"
+                  autocomplete="new-password"
+                  required
+                />
+                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('confirm-password', this)" title="Show password">
+                  <span class="eye-icon">👁</span>
+                </button>
+              </div>
             </div>
 
             <div class="btn-group">
@@ -204,12 +220,17 @@
 
           <div id="wifi-password-group" class="form-group hidden">
             <label class="form-label" for="wifi-password">WiFi Password</label>
-            <input
-              type="password"
-              id="wifi-password"
-              class="form-input"
-              placeholder="Enter WiFi password"
-            />
+            <div class="password-input-wrapper">
+              <input
+                type="password"
+                id="wifi-password"
+                class="form-input"
+                placeholder="Enter WiFi password"
+              />
+              <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('wifi-password', this)" title="Show password">
+                <span class="eye-icon">👁</span>
+              </button>
+            </div>
           </div>
 
           <div class="btn-group">
@@ -230,33 +251,73 @@
       <div id="step-5" class="setup-step hidden">
         <div class="card">
           <h2 class="card-title">Register Your Camera</h2>
-          <p>Sign in with your The Police Record account to register this camera and enable cloud features.</p>
-          
+          <p>Scan a QR code from the Authority Alert app, or sign in with your account.</p>
+
           <!-- Registration Status -->
           <div id="registration-status" class="registration-status hidden">
             <div id="registration-status-icon" class="status-icon"></div>
             <div id="registration-status-text" class="status-text"></div>
           </div>
-          
-          <!-- Sign In Section -->
-          <div id="signin-section" class="signin-section">
-            <div class="signin-info">
-              <p>Click the button below to sign in with your account. You'll be redirected to a secure login page.</p>
-              <p class="signin-note">Don't have an account? You can create one during the sign-in process.</p>
+
+          <!-- QR Scan Section (hidden by default, shown when scanning) -->
+          <div id="qr-scan-section" class="qr-scan-section hidden">
+            <div class="camera-preview-container">
+              <video id="qr-camera-preview" autoplay muted playsinline></video>
+              <div class="scan-overlay">
+                <div class="scan-target"></div>
+              </div>
             </div>
-            
-            <button type="button" id="oauth-signin-btn" class="btn btn-primary btn-large" onclick="oobeApp.handleOAuthSignIn()">
-              🔐 Sign In with The Police Record
+            <div id="qr-scan-status" class="scan-status">
+              <span class="status-text">Position QR code in front of camera</span>
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="oobeApp.cancelQRScan()">
+              Cancel Scan
             </button>
           </div>
-          
+
+          <!-- Registration Options (shown by default) -->
+          <div id="registration-options" class="registration-options">
+            <button type="button" class="btn btn-primary btn-large" onclick="oobeApp.startQRRegistration()">
+              Scan QR Code
+            </button>
+            <div class="or-divider"><span>or</span></div>
+            <button type="button" class="btn btn-info btn-large" onclick="oobeApp.startCodeRegistration()">
+              Use Registration Code
+            </button>
+            <div class="or-divider"><span>or</span></div>
+            <button type="button" id="oauth-signin-btn" class="btn btn-secondary" onclick="oobeApp.handleOAuthSignIn()">
+              Sign In with Account
+            </button>
+          </div>
+
+          <!-- Code Registration Section (hidden by default, shown when using code) -->
+          <div id="code-registration-section" class="code-registration-section hidden">
+            <div class="code-display-container">
+              <div class="code-label">Your Registration Code</div>
+              <div id="registration-code-display" class="registration-code">--- ---</div>
+              <div id="code-expiry-timer" class="code-expiry-timer">Generating...</div>
+            </div>
+            <div class="code-instructions">
+              <span id="code-status-icon" class="status-icon">📱</span>
+              <span id="code-status-text" class="status-text">Enter this code in the Authority Alert mobile app</span>
+            </div>
+            <div class="code-help">
+              <p>1. Open the Authority Alert app on your phone</p>
+              <p>2. Go to Settings &gt; Add Camera</p>
+              <p>3. Select "Enter Code" and type the code above</p>
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="oobeApp.cancelCodeRegistration()">
+              Cancel
+            </button>
+          </div>
+
           <!-- Post-Registration Info (shown after successful registration) -->
           <div id="registration-success" class="registration-success hidden">
             <div class="success-icon">✓</div>
             <h3>Camera Registered Successfully!</h3>
             <p>Your camera is now linked to your account and ready to use.</p>
           </div>
-          
+
           <!-- Action Buttons -->
           <div class="btn-group">
             <button type="button" class="btn btn-secondary" onclick="oobeApp.showStep(4)">

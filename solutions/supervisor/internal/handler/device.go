@@ -22,6 +22,7 @@ import (
 	"supervisor/internal/config"
 	"supervisor/internal/device"
 	"supervisor/internal/system"
+	"supervisor/internal/tls"
 	"supervisor/internal/upgrade"
 	"supervisor/pkg/logger"
 )
@@ -1333,9 +1334,7 @@ func selfRegisterCamera(apiKey string, cameraData *AACamera) error {
 	applyPlatformCommonHeaders(req)
 
 	// Send request
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
+	client := tls.PlatformHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
@@ -1433,7 +1432,7 @@ func (h *DeviceHandler) selfRegisterWithAPIKey(apiKey string, userID interface{}
 	httpReq.Header.Set("TPR-API-KEY", apiKey)
 	applyPlatformCommonHeaders(httpReq)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := tls.PlatformHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to platform: %w", err)
@@ -1720,7 +1719,7 @@ func (h *DeviceHandler) runCodeRegistration() {
 		return
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := tls.PlatformHTTPClient(30 * time.Second)
 	retryCount := 0
 	const maxRetryBackoff = 30 // Max backoff seconds
 
@@ -1808,6 +1807,17 @@ func (h *DeviceHandler) runCodeRegistration() {
 		logger.Info("Platform register response status: %d, body: %s", resp.StatusCode, string(body))
 
 		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+			// Parse initial registration response to get camera_id (for logging/validation)
+			var regResp struct {
+				Data struct {
+					Camera struct {
+						CameraID string `json:"camera_id"`
+					} `json:"camera"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(body, &regResp); err == nil && regResp.Data.Camera.CameraID != "" {
+				logger.Info("Platform assigned camera_id: %s", regResp.Data.Camera.CameraID)
+			}
 			registered = true
 			retryCount = 0 // Reset retry count on success
 			h.updateInternetStatus(true, "")
@@ -1911,6 +1921,9 @@ func (h *DeviceHandler) runCodeRegistration() {
 					APIKey          string `json:"api_key"`
 					SecretKey       string `json:"secret_key"`
 					UserID          int    `json:"user_id"`
+					Camera          struct {
+						CameraID string `json:"camera_id"`
+					} `json:"camera"`
 				} `json:"data"`
 			}
 
@@ -1929,14 +1942,21 @@ func (h *DeviceHandler) runCodeRegistration() {
 					apiKey = statusData.Data.APIKey
 				}
 
+				// Validate that we have an API key before completing registration
+				if apiKey == "" {
+					logger.Warning("Camera claimed but no API key received yet, continuing to poll...")
+					continue
+				}
+
 				// Save platform info locally and complete
 				registrationData := map[string]interface{}{
-					"platform_url":  platformBaseURL(),
-					"secret_key":    apiKey,
-					"camera_uid":    serialNumber,
-					"user_id":       statusData.Data.UserID,
-					"registered_at": time.Now().Format(time.RFC3339),
-					"location_name": req.LocationName,
+					"platform_url":   platformBaseURL(),
+					"secret_key":     apiKey,
+					"camera_uid":     serialNumber,
+					"tpr_camera_id":  statusData.Data.Camera.CameraID,
+					"user_id":        statusData.Data.UserID,
+					"registered_at":  time.Now().Format(time.RFC3339),
+					"location_name":  req.LocationName,
 				}
 				if req.Latitude != nil {
 					registrationData["latitude"] = *req.Latitude
@@ -1951,7 +1971,7 @@ func (h *DeviceHandler) runCodeRegistration() {
 				}
 
 				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
-				logger.Info("Code registration completed successfully (already confirmed)")
+				logger.Info("Code registration completed successfully (already confirmed), tpr_camera_id=%s", statusData.Data.Camera.CameraID)
 				return
 			}
 
@@ -1963,6 +1983,12 @@ func (h *DeviceHandler) runCodeRegistration() {
 				apiKey := statusData.Data.SecretKey
 				if apiKey == "" {
 					apiKey = statusData.Data.APIKey
+				}
+
+				// Validate that we have an API key before confirming
+				if apiKey == "" {
+					logger.Warning("Camera claimed but no API key received, continuing to poll...")
+					continue
 				}
 
 				// Update status to show we're confirming
@@ -2042,6 +2068,7 @@ func (h *DeviceHandler) runCodeRegistration() {
 					"platform_url":   platformBaseURL(),
 					"secret_key":     apiKey,
 					"camera_uid":     serialNumber,
+					"tpr_camera_id":  statusData.Data.Camera.CameraID,
 					"user_id":        statusData.Data.UserID,
 					"registered_at":  time.Now().Format(time.RFC3339),
 					"location_name":  req.LocationName,
@@ -2060,7 +2087,7 @@ func (h *DeviceHandler) runCodeRegistration() {
 
 				// Success! Return the registration data as result
 				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
-				logger.Info("Code registration completed successfully")
+				logger.Info("Code registration completed successfully, tpr_camera_id=%s", statusData.Data.Camera.CameraID)
 				return
 			}
 		}

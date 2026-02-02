@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"supervisor/internal/system"
+	tlsutil "supervisor/internal/tls"
 	"supervisor/pkg/logger"
 )
 
@@ -1560,6 +1561,10 @@ func newHTTPClient(timeout time.Duration, noRedirect bool, insecureTLS bool) *ht
 		cloned := tr.Clone()
 		if insecureTLS {
 			cloned.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		} else {
+			// Use the platform cert pool which includes both system certs
+			// and our custom TPR CA certificate
+			cloned.TLSClientConfig = &tls.Config{RootCAs: tlsutil.PlatformCertPool()}
 		}
 		transport = cloned
 	} else {

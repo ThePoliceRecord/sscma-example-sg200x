@@ -89,7 +89,7 @@
                   autocomplete="current-password"
                   value="recamera"
                 />
-                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('old-password', this)" title="Show password">
+                <button type="button" class="password-toggle" tabindex="-1" onclick="oobeApp.togglePasswordVisibility('old-password', this)" title="Show password">
                   <span class="eye-icon">👁</span>
                 </button>
               </div>
@@ -107,7 +107,7 @@
                   autocomplete="new-password"
                   required
                 />
-                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('new-password', this)" title="Show password">
+                <button type="button" class="password-toggle" tabindex="-1" onclick="oobeApp.togglePasswordVisibility('new-password', this)" title="Show password">
                   <span class="eye-icon">👁</span>
                 </button>
               </div>
@@ -125,7 +125,7 @@
                   autocomplete="new-password"
                   required
                 />
-                <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('confirm-password', this)" title="Show password">
+                <button type="button" class="password-toggle" tabindex="-1" onclick="oobeApp.togglePasswordVisibility('confirm-password', this)" title="Show password">
                   <span class="eye-icon">👁</span>
                 </button>
               </div>
@@ -227,7 +227,7 @@
                 class="form-input"
                 placeholder="Enter WiFi password"
               />
-              <button type="button" class="password-toggle" onclick="oobeApp.togglePasswordVisibility('wifi-password', this)" title="Show password">
+              <button type="button" class="password-toggle" tabindex="-1" onclick="oobeApp.togglePasswordVisibility('wifi-password', this)" title="Show password">
                 <span class="eye-icon">👁</span>
               </button>
             </div>

@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"supervisor/internal/config"
+	"supervisor/internal/handler"
 	"supervisor/internal/server"
 	"supervisor/internal/system"
 	"supervisor/internal/upgrade"
@@ -106,6 +107,9 @@ func main() {
 	}
 
 	logger.Info("Supervisor started (version %s)", Version)
+
+	// Start external relay forwarders if configured
+	go handler.StartRelayControl()
 
 	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)

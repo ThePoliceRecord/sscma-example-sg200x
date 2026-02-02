@@ -95,7 +95,7 @@ func DefaultConfig() *Config {
 
 		// Default to development for testing
 		// Override via env: TPR_PLATFORM_URL=https://thepolicerecord.com for production
-		TPRPlatformURL: "https://dev.thepolicerecord.com",
+		TPRPlatformURL: "https://thepolicerecord.com",
 	}
 }
 

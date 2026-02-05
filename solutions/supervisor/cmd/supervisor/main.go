@@ -17,6 +17,7 @@ import (
 
 	"supervisor/internal/config"
 	"supervisor/internal/handler"
+	"supervisor/internal/ntp"
 	"supervisor/internal/server"
 	"supervisor/internal/system"
 	"supervisor/internal/upgrade"
@@ -111,12 +112,19 @@ func main() {
 	// Start external relay forwarders if configured
 	go handler.StartRelayControl()
 
+	// Start NTP time synchronization
+	ntpManager := ntp.NewManager()
+	ntpManager.Start(context.Background())
+
 	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	logger.Info("Shutting down...")
+
+	// Stop NTP manager
+	ntpManager.Stop()
 
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

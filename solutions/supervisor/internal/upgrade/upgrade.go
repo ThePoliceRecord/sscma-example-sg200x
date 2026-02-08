@@ -936,9 +936,17 @@ func (m *UpgradeManager) downloadOTA() error {
 	}
 
 	// Verify Checksum
-	m.updateProgress(45, "download: verifying")
+	m.updateProgress(45, "download: verifying checksum")
 	logger.Info("Verifying checksum of downloaded file")
 	if err := m.verifyChecksum(tmpPath, info.Checksum); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	// Verify firmware signature (if enabled)
+	m.updateProgress(47, "download: verifying signature")
+	if err := m.VerifyDownloadedFirmware(downloadURL, tmpPath); err != nil {
+		logger.Error("Firmware signature verification failed: %v", err)
 		os.Remove(tmpPath)
 		return err
 	}

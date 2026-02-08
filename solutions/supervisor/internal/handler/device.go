@@ -3,6 +3,7 @@ package handler
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +22,8 @@ import (
 	"supervisor/internal/api"
 	"supervisor/internal/config"
 	"supervisor/internal/device"
+	"supervisor/internal/modelupdate"
+	"supervisor/internal/ntp"
 	"supervisor/internal/system"
 	"supervisor/internal/tls"
 	"supervisor/internal/upgrade"
@@ -33,6 +36,7 @@ type DeviceHandler struct {
 	modelSuffix string
 	deviceInfo  *device.APIDeviceInfo
 	upgradeMgr  *upgrade.UpgradeManager
+	ntpManager  *ntp.Manager
 }
 
 const (
@@ -101,11 +105,12 @@ func applyPlatformCommonHeaders(req *http.Request) {
 }
 
 // NewDeviceHandler creates a new DeviceHandler.
-func NewDeviceHandler() *DeviceHandler {
+func NewDeviceHandler(ntpManager *ntp.Manager) *DeviceHandler {
 	h := &DeviceHandler{
 		modelDir:    "/usr/share/supervisor/models",
 		modelSuffix: ".cvimodel",
 		upgradeMgr:  upgrade.NewUpgradeManager(),
+		ntpManager:  ntpManager,
 	}
 
 	// Load device info
@@ -214,13 +219,25 @@ func (h *DeviceHandler) QueryServiceStatus(w http.ResponseWriter, r *http.Reques
 
 // GetSystemStatus returns system status information.
 func (h *DeviceHandler) GetSystemStatus(w http.ResponseWriter, r *http.Request) {
-	// Return system status using native Go
-	api.WriteSuccess(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"uptime":     system.GetUptime(),
 		"deviceName": system.GetDeviceName(),
 		"osName":     system.GetOSName(),
 		"osVersion":  system.GetOSVersion(),
-	})
+	}
+
+	// Add NTP status if manager is available
+	if h.ntpManager != nil {
+		response["ntpSynced"] = h.ntpManager.IsSynced()
+		lastSync := h.ntpManager.LastSync()
+		if !lastSync.IsZero() {
+			response["lastNtpSync"] = lastSync.Unix()
+		} else {
+			response["lastNtpSync"] = nil
+		}
+	}
+
+	api.WriteSuccess(w, response)
 }
 
 // GetInternetStatus checks and returns internet connectivity status.
@@ -1970,6 +1987,9 @@ func (h *DeviceHandler) runCodeRegistration() {
 					logger.Warning("Failed to save platform info locally: %v", err)
 				}
 
+				// Trigger immediate model download after registration
+				triggerPostRegistrationModelDownload()
+
 				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
 				logger.Info("Code registration completed successfully (already confirmed), tpr_camera_id=%s", statusData.Data.Camera.CameraID)
 				return
@@ -2085,6 +2105,9 @@ func (h *DeviceHandler) runCodeRegistration() {
 					logger.Warning("Failed to save platform info locally: %v", err)
 				}
 
+				// Trigger immediate model download after registration
+				triggerPostRegistrationModelDownload()
+
 				// Success! Return the registration data as result
 				h.setCodeRegStatus("claimed", "Camera registered successfully!", registrationData)
 				logger.Info("Code registration completed successfully, tpr_camera_id=%s", statusData.Data.Camera.CameraID)
@@ -2127,4 +2150,46 @@ func (h *DeviceHandler) setCodeRegStatus(status, message string, result map[stri
 func (h *DeviceHandler) setCodeRegError(message string) {
 	h.setCodeRegStatus("error", message, nil)
 	logger.Error("Code registration error: %s", message)
+}
+
+// triggerPostRegistrationModelDownload initiates model download after registration.
+func triggerPostRegistrationModelDownload() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		mgr := modelupdate.GetManager()
+		if err := mgr.CheckNow(ctx); err != nil {
+			logger.Warning("Post-registration model download failed: %v", err)
+		}
+	}()
+}
+
+// ============================================================================
+// Model Update APIs
+// ============================================================================
+
+// GetModelUpdateStatus returns the current model update status.
+func (h *DeviceHandler) GetModelUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	// Import modelupdate package dynamically to avoid circular imports
+	// The modelupdate manager is accessed via a package-level function
+	status := getModelUpdateStatus()
+	api.WriteSuccess(w, status)
+}
+
+// CheckModelUpdates triggers an immediate model update check.
+func (h *DeviceHandler) CheckModelUpdates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, -1, "Method not allowed")
+		return
+	}
+
+	if err := triggerModelUpdateCheck(); err != nil {
+		api.WriteError(w, -1, err.Error())
+		return
+	}
+
+	api.WriteSuccess(w, map[string]interface{}{
+		"status":  "checking",
+		"message": "Model update check started",
+	})
 }

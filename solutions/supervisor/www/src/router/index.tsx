@@ -12,6 +12,7 @@ import Recording from "@/views/recording";
 import LEDConfig from "@/views/led-config";
 import Updates from "@/views/updates";
 import About from "@/views/about";
+import Detections from "@/views/detections";
 import ConfigLayout from "@/layout/config";
 import MainLayout from "@/layout/main";
 
@@ -77,6 +78,10 @@ const Routes = [
       {
         path: "recording",
         element: <Recording />,
+      },
+      {
+        path: "detections",
+        element: <Detections />,
       },
       {
         path: "led-config",

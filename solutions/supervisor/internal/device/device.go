@@ -247,19 +247,10 @@ func GetAPIDevice() *APIDeviceInfo {
 	}
 }
 
-// checkModels ensures model files exist, copying defaults if needed.
+// checkModels ensures the model directory exists for downloads.
+// Models are downloaded from the platform API after registration.
 func checkModels() {
-	if err := os.MkdirAll(ModelDir, 0755); err != nil {
-		return
-	}
-
-	if _, err := os.Stat(ModelFile); os.IsNotExist(err) {
-		srcModel := filepath.Join(ModelsPreset, "yolo11n_detection_cv181x_int8.cvimodel")
-		srcInfo := filepath.Join(ModelsPreset, "yolo11n_detection_cv181x_int8.json")
-
-		copyFile(srcModel, ModelFile)
-		copyFile(srcInfo, ModelInfoFile)
-	}
+	os.MkdirAll(ModelDir, 0755)
 }
 
 // copyFile copies a file from src to dst.

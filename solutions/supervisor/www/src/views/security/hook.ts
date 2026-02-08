@@ -11,6 +11,7 @@ import {
   delSshKeyApi,
   addSshKeyApi,
 } from "@/api/user";
+import { getPlatformInfoApi, reRegisterCameraApi } from "@/api/device";
 import useUserStore from "@/store/user";
 import { supervisorRequest } from "@/utils/request";
 
@@ -20,6 +21,16 @@ interface FormParams {
   newPassword: string;
   sshName: string;
   sshKey: string;
+}
+
+interface PlatformInfo {
+  platform_url?: string;
+  secret_key?: string;
+  camera_uid?: string;
+  tpr_camera_id?: string;
+  user_id?: number;
+  registered_at?: string;
+  location_name?: string;
 }
 
 // Code registration status from supervisor
@@ -53,6 +64,10 @@ interface IInitialState {
   // Code registration
   codeRegStatus: CodeRegistrationStatus | null;
   codeRegLoading: boolean;
+  // Platform info
+  platformInfo: PlatformInfo | null;
+  platformInfoLoading: boolean;
+  reRegisterLoading: boolean;
 }
 type ActionType = { type: "setState"; payload: Partial<IInitialState> };
 const initialState: IInitialState = {
@@ -65,6 +80,9 @@ const initialState: IInitialState = {
   sshEnabled: false,
   codeRegStatus: null,
   codeRegLoading: false,
+  platformInfo: null,
+  platformInfoLoading: false,
+  reRegisterLoading: false,
 };
 function reducer(state: IInitialState, action: ActionType): IInitialState {
   switch (action.type) {
@@ -251,10 +269,50 @@ export function useData() {
     }
   };
 
+  // Platform info functions
+  const fetchPlatformInfo = useCallback(async () => {
+    try {
+      setStates({ platformInfoLoading: true });
+      const response = await getPlatformInfoApi();
+      if (response.code === 0 && response.data?.platform_info) {
+        const parsed = JSON.parse(response.data.platform_info) as PlatformInfo;
+        setStates({ platformInfo: parsed, platformInfoLoading: false });
+      } else {
+        setStates({ platformInfo: null, platformInfoLoading: false });
+      }
+    } catch (error) {
+      console.error("Failed to fetch platform info:", error);
+      setStates({ platformInfo: null, platformInfoLoading: false });
+    }
+  }, []);
+
+  const handleReRegister = async () => {
+    try {
+      setStates({ reRegisterLoading: true });
+      const response = await reRegisterCameraApi();
+      if (response.code === 0) {
+        message.success('Re-registration initiated successfully');
+        // Refresh platform info after a delay
+        setTimeout(() => {
+          fetchPlatformInfo();
+        }, 2000);
+      } else {
+        message.error(response.message || 'Failed to re-register camera');
+      }
+    } catch (error) {
+      console.error("Failed to re-register camera:", error);
+      message.error('Failed to re-register camera');
+    } finally {
+      setStates({ reRegisterLoading: false });
+    }
+  };
+
   useEffect(() => {
     onQueryUserInfo();
     // Check for active code registration on mount
     fetchCodeRegistrationStatus();
+    // Fetch platform info on mount
+    fetchPlatformInfo();
 
     return () => {
       stopCodeRegPolling();
@@ -287,5 +345,7 @@ export function useData() {
     onDeleteFinish,
     setSShStatus,
     cancelCodeRegistration,
+    fetchPlatformInfo,
+    handleReRegister,
   };
 }

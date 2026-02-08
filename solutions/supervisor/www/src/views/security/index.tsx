@@ -1,7 +1,7 @@
 import CommonPopup from "@/components/common-popup";
-import { Button, Form, Input, Switch, Empty, Alert } from "antd";
+import { Button, Form, Input, Switch, Empty, Alert, Modal } from "antd";
 import KeyImg from "@/assets/images/svg/key.svg";
-import { DeleteOutlined, UserOutlined, LockOutlined, SafetyCertificateOutlined, KeyOutlined, PlusOutlined, CloseOutlined, WifiOutlined, SyncOutlined } from "@ant-design/icons";
+import { DeleteOutlined, UserOutlined, LockOutlined, SafetyCertificateOutlined, KeyOutlined, PlusOutlined, CloseOutlined, WifiOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined } from "@ant-design/icons";
 import { useData, IFormTypeEnum } from "./hook";
 import moment from "moment";
 import {
@@ -41,6 +41,7 @@ const Security = () => {
     onDeleteFinish,
     setSShStatus,
     cancelCodeRegistration,
+    handleReRegister,
   } = useData();
 
   const handleSShStatusChange = (checked: boolean) => {
@@ -153,6 +154,114 @@ const Security = () => {
             {state.codeRegStatus?.retry_count && state.codeRegStatus.retry_count > 0 && (
               <div className="text-12 text-platinum/50 mt-12">
                 Retry attempt: {state.codeRegStatus.retry_count}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Platform Registration Section */}
+      {!hasActiveRegistration && (
+        <div className="mb-24">
+          <div className="font-bold text-16 mb-12 text-platinum/70 uppercase tracking-wide">
+            Platform Registration
+          </div>
+          <div className="p-20" style={translucentCardStyle}>
+            {/* Loading state */}
+            {state.platformInfoLoading && (
+              <div className="flex items-center justify-center py-8">
+                <SyncOutlined spin style={{ fontSize: 24, color: '#9be564' }} />
+                <span className="ml-12 text-platinum/60">Loading registration status...</span>
+              </div>
+            )}
+
+            {/* Registered state */}
+            {!state.platformInfoLoading && state.platformInfo?.tpr_camera_id && (
+              <div>
+                <div className="flex items-center mb-16">
+                  <div className="w-48 h-48 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: 'rgba(155, 229, 100, 0.2)' }}>
+                    <CheckCircleOutlined style={{ fontSize: 24, color: '#9be564' }} />
+                  </div>
+                  <div>
+                    <div className="text-18 font-bold text-platinum">Registered</div>
+                    <div className="text-14 text-platinum/60">Camera is connected to the platform</div>
+                  </div>
+                </div>
+
+                <div className="space-y-12 mb-20 pl-4">
+                  {state.platformInfo.platform_url && (
+                    <div className="flex items-start">
+                      <div className="text-12 text-platinum/50 uppercase tracking-wide w-100 flex-shrink-0">Platform</div>
+                      <a
+                        href={state.platformInfo.platform_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-14 text-primary hover:underline break-all"
+                      >
+                        {state.platformInfo.platform_url}
+                      </a>
+                    </div>
+                  )}
+                  <div className="flex items-start">
+                    <div className="text-12 text-platinum/50 uppercase tracking-wide w-100 flex-shrink-0">Camera ID</div>
+                    <div className="text-14 text-platinum font-mono">{state.platformInfo.tpr_camera_id}</div>
+                  </div>
+                  {state.platformInfo.location_name && (
+                    <div className="flex items-start">
+                      <div className="text-12 text-platinum/50 uppercase tracking-wide w-100 flex-shrink-0">Location</div>
+                      <div className="text-14 text-platinum">{state.platformInfo.location_name}</div>
+                    </div>
+                  )}
+                  {state.platformInfo.registered_at && (
+                    <div className="flex items-start">
+                      <div className="text-12 text-platinum/50 uppercase tracking-wide w-100 flex-shrink-0">Registered</div>
+                      <div className="text-14 text-platinum">
+                        {moment(state.platformInfo.registered_at).format("MMMM DD, YYYY [at] h:mm A")}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <Button
+                  type="default"
+                  loading={state.reRegisterLoading}
+                  onClick={() => {
+                    Modal.confirm({
+                      title: 'Re-register Camera',
+                      content: (
+                        <div>
+                          <p>This will re-register the camera with the platform. Use this if:</p>
+                          <ul className="list-disc pl-20 mt-8">
+                            <li>The camera was moved to a different location</li>
+                            <li>You need to transfer ownership to a different user</li>
+                            <li>There are connection issues with the platform</li>
+                          </ul>
+                          <p className="mt-12 text-amber-500">The camera will generate a new claim code that must be entered on the platform.</p>
+                        </div>
+                      ),
+                      okText: 'Re-register',
+                      cancelText: 'Cancel',
+                      onOk: handleReRegister,
+                    });
+                  }}
+                >
+                  Re-register Camera
+                </Button>
+              </div>
+            )}
+
+            {/* Not registered state */}
+            {!state.platformInfoLoading && !state.platformInfo?.tpr_camera_id && (
+              <div className="flex items-center">
+                <div className="w-48 h-48 rounded-full flex items-center justify-center mr-16" style={{ backgroundColor: 'rgba(255, 193, 7, 0.2)' }}>
+                  <ExclamationCircleOutlined style={{ fontSize: 24, color: '#ffc107' }} />
+                </div>
+                <div>
+                  <div className="text-18 font-bold text-platinum">Not Registered</div>
+                  <div className="text-14 text-platinum/60">
+                    Complete the initial setup to register this camera with the platform
+                  </div>
+                </div>
               </div>
             )}
           </div>

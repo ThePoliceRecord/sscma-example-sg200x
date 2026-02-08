@@ -15,9 +15,13 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"supervisor/internal/cameradb"
 	"supervisor/internal/config"
+	"supervisor/internal/detectionqueue"
 	"supervisor/internal/handler"
+	"supervisor/internal/modelupdate"
 	"supervisor/internal/ntp"
+	"supervisor/internal/security"
 	"supervisor/internal/server"
 	"supervisor/internal/system"
 	"supervisor/internal/upgrade"
@@ -83,6 +87,10 @@ func main() {
 	// Initialize logger with appropriate level
 	logger.SetLevel(logger.Level(cfg.LogLevel))
 
+	// Load security configuration (firmware signing, TSA timestamping, etc.)
+	// These features are disabled by default and can be enabled via /etc/recamera.conf/security.json
+	security.Load()
+
 	// Cron mode: run the check and exit without starting the server.
 	if *checkUpdates {
 		if err := runUpdateCheckOnce(); err != nil {
@@ -100,8 +108,12 @@ func main() {
 		}
 	}
 
-	// Create and start server
-	srv := server.New(cfg)
+	// Start NTP time synchronization first (needed by server and uploader)
+	ntpManager := ntp.NewManager()
+	ntpManager.Start(context.Background())
+
+	// Create and start server (pass NTP manager for status API)
+	srv := server.New(cfg, ntpManager)
 	if err := srv.Start(); err != nil {
 		logger.Error("Failed to start server: %v", err)
 		os.Exit(1)
@@ -112,9 +124,26 @@ func main() {
 	// Start external relay forwarders if configured
 	go handler.StartRelayControl()
 
-	// Start NTP time synchronization
-	ntpManager := ntp.NewManager()
-	ntpManager.Start(context.Background())
+	// Start model update manager
+	modelUpdateManager := modelupdate.GetManager()
+	modelUpdateManager.Start(context.Background())
+
+	// Start detection uploader (queues detections from camera-detector for platform upload)
+	// Pass NTP manager so uploader waits for time sync before uploading
+	detectionUploader := detectionqueue.GetUploader()
+	detectionUploader.SetNTPManager(ntpManager)
+	detectionUploader.Start(context.Background())
+
+	// Open camera database (optional - used for recording/detection correlation)
+	if _, err := cameradb.Open(); err != nil {
+		logger.Warning("Failed to open camera database: %v (detection correlation disabled)", err)
+	} else {
+		logger.Info("Camera database opened")
+	}
+
+	// Start file verifier (checks for missing recording/detection files)
+	fileVerifier := cameradb.NewVerifier(1 * time.Hour)
+	fileVerifier.Start(context.Background())
 
 	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
@@ -122,6 +151,18 @@ func main() {
 	<-quit
 
 	logger.Info("Shutting down...")
+
+	// Stop file verifier
+	fileVerifier.Stop()
+
+	// Close camera database
+	cameradb.Close()
+
+	// Stop detection uploader
+	detectionUploader.Stop()
+
+	// Stop model update manager
+	modelUpdateManager.Stop()
 
 	// Stop NTP manager
 	ntpManager.Stop()

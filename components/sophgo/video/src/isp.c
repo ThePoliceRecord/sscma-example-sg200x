@@ -353,7 +353,7 @@ int app_ipcam_Vi_Isp_Init(void)
         stsCfg.stWBCfg.stCrop.u16H = stPubAttr.stWndRect.u32Height;
         stsCfg.stWBCfg.u16BlackLevel = 0;
         stsCfg.stWBCfg.u16WhiteLevel = 4095;
-        stsCfg.stFocusCfg.stConfig.bEnable = 1;
+        stsCfg.stFocusCfg.stConfig.bEnable = 0;
         stsCfg.stFocusCfg.stConfig.u8HFltShift = 1;
         stsCfg.stFocusCfg.stConfig.s8HVFltLpCoeff[0] = 1;
         stsCfg.stFocusCfg.stConfig.s8HVFltLpCoeff[1] = 2;
@@ -391,7 +391,7 @@ int app_ipcam_Vi_Isp_Init(void)
         stsCfg.unKey.bit1FEAeLocStat = 1;
         stsCfg.unKey.bit1AwbStat1 = 1;
         stsCfg.unKey.bit1AwbStat2 = 1;
-        stsCfg.unKey.bit1FEAfStat = 1;
+        stsCfg.unKey.bit1FEAfStat = 0;
 
         //LDG
         stsCfg.stFocusCfg.stConfig.u8ThLow = 0;
@@ -410,6 +410,15 @@ int app_ipcam_Vi_Isp_Init(void)
         s32Ret = app_ipcam_PQBin_Load(PQ_BIN_SDR);
         if (s32Ret != CVI_SUCCESS) {
             APP_PROF_LOG_PRINT(LEVEL_WARN, "load %s failed with %#x!\n", PQ_BIN_SDR, s32Ret);
+        }
+
+        // Re-disable AF after PQ bin load (bin may have re-enabled it)
+        {
+            ISP_STATISTICS_CFG_S stsCfgOverride;
+            CVI_ISP_GetStatisticsConfig(ViPipe, &stsCfgOverride);
+            stsCfgOverride.stFocusCfg.stConfig.bEnable = 0;
+            stsCfgOverride.unKey.bit1FEAfStat = 0;
+            CVI_ISP_SetStatisticsConfig(ViPipe, &stsCfgOverride);
         }
     }
 

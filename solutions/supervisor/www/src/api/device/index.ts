@@ -272,6 +272,34 @@ export const reRegisterCameraApi = async () =>
     method: "post",
   });
 
+// Model update status
+export interface ModelUpdateStatus {
+  last_check: string;
+  last_update: string;
+  current_version: number;
+  latest_version: number;
+  update_available: boolean;
+  is_downloading: boolean;
+  download_progress: number;
+  last_error: string;
+  model_file: string;
+}
+
+export const getModelUpdateStatusApi = async () =>
+  supervisorRequest<ModelUpdateStatus>({
+    url: "api/deviceMgr/getModelUpdateStatus",
+    method: "get",
+  });
+
+export const checkModelUpdatesApi = async () =>
+  supervisorRequest<{
+    status: string;
+    message: string;
+  }>({
+    url: "api/deviceMgr/checkModelUpdates",
+    method: "post",
+  });
+
 // Update configuration
 export interface UpdateConfig {
   os_source: "tpr_official" | "self_hosted";

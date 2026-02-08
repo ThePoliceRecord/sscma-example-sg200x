@@ -3,19 +3,21 @@ import { Radio, Select, Button, Input, message, Spin, Progress, Modal } from "an
 import { CloudDownloadOutlined, SyncOutlined, CheckCircleOutlined, LinkOutlined, UploadOutlined, CloseCircleOutlined } from "@ant-design/icons";
 import type { RadioChangeEvent } from "antd";
 import React from "react";
-import { 
+import {
   queryDeviceInfoApi,
   getUpdateConfigApi,
-  setUpdateConfigApi, 
+  setUpdateConfigApi,
   UpdateConfig as APIUpdateConfig,
-  updateSystemApi, 
-  uploadUpdatePackageApi, 
+  updateSystemApi,
+  uploadUpdatePackageApi,
   getUploadedUpdatePackageApi,
   applyUploadedUpdatePackageApi,
   getUpdateSystemProgressApi,
   cancelUpdateApi,
   getSystemUpdateVersionApi,
   getUpdateCheckProgressApi,
+  getModelUpdateStatusApi,
+  checkModelUpdatesApi,
   type UploadedUpdatePackageInfo,
 } from "@/api/device";
 import { SystemUpdateStatus } from "@/enum";
@@ -173,15 +175,20 @@ function Updates() {
     isDowngrade: false,
   });
 
-  const [modelUpdateInfo] = useState<UpdateInfo>({
-    currentVersion: "(n/a)",
-    latestVersion: "(n/a)",
+  const [modelUpdateInfo, setModelUpdateInfo] = useState<UpdateInfo>({
+    currentVersion: "(loading...)",
+    latestVersion: "(loading...)",
     hasUpdate: false,
-    lastChecked: "Not implemented",
+    lastChecked: "Never",
     currentVersionRaw: "",
     latestVersionRaw: "",
     isDowngrade: false,
   });
+  const [modelDownloadProgress, setModelDownloadProgress] = useState<{ progress: number; status?: string }>({
+    progress: 0,
+    status: "idle",
+  });
+  const modelPollTimerRef = useRef<number | null>(null);
 
   const formatAge = (unixSeconds?: number) => {
     if (!unixSeconds) return "Never";
@@ -194,6 +201,86 @@ function Updates() {
     if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
     const days = Math.floor(hours / 24);
     return `${days} day${days === 1 ? "" : "s"} ago`;
+  };
+
+  const formatAgeFromISO = (isoString?: string) => {
+    if (!isoString) return "Never";
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return "Never";
+    const unixSeconds = Math.floor(date.getTime() / 1000);
+    return formatAge(unixSeconds);
+  };
+
+  const stopModelPolling = () => {
+    if (modelPollTimerRef.current != null) {
+      window.clearInterval(modelPollTimerRef.current);
+      modelPollTimerRef.current = null;
+    }
+  };
+
+  const startModelPolling = () => {
+    if (modelPollTimerRef.current != null) return;
+    modelPollTimerRef.current = window.setInterval(async () => {
+      try {
+        const status = await getModelUpdateStatusApi();
+        setModelDownloadProgress({
+          progress: status.data.download_progress,
+          status: status.data.is_downloading ? "downloading" : "idle",
+        });
+
+        // Update model info
+        setModelUpdateInfo({
+          currentVersion: formatModelVersion(status.data.current_version),
+          latestVersion: formatModelVersion(status.data.latest_version),
+          hasUpdate: status.data.update_available,
+          lastChecked: formatAgeFromISO(status.data.last_check),
+          currentVersionRaw: status.data.current_version?.toString() || "",
+          latestVersionRaw: status.data.latest_version?.toString() || "",
+          isDowngrade: false,
+        });
+
+        // Stop polling if not downloading (either download completed or no download started)
+        if (!status.data.is_downloading) {
+          stopModelPolling();
+          setModelDownloadProgress({ progress: 0, status: "idle" });
+        }
+      } catch {
+        stopModelPolling();
+      }
+    }, 1000);
+  };
+
+  const formatModelVersion = (v: number | undefined | null): string => {
+    if (v === undefined || v === null) return "(unknown)";
+    if (v === 0) return "(not installed)";
+    return `v${v}`;
+  };
+
+  const refreshModelUpdateInfo = async () => {
+    try {
+      const status = await getModelUpdateStatusApi();
+      setModelUpdateInfo({
+        currentVersion: formatModelVersion(status.data.current_version),
+        latestVersion: formatModelVersion(status.data.latest_version),
+        hasUpdate: status.data.update_available,
+        lastChecked: status.data.last_error
+          ? `Error: ${status.data.last_error}`
+          : formatAgeFromISO(status.data.last_check),
+        currentVersionRaw: status.data.current_version?.toString() || "",
+        latestVersionRaw: status.data.latest_version?.toString() || "",
+        isDowngrade: false,
+      });
+
+      if (status.data.is_downloading) {
+        setModelDownloadProgress({
+          progress: status.data.download_progress,
+          status: "downloading",
+        });
+        startModelPolling();
+      }
+    } catch (err) {
+      console.error("Failed to refresh model update info:", err);
+    }
   };
 
   const stopOSCheckProgressPolling = () => {
@@ -312,8 +399,11 @@ function Updates() {
         setConfig(nextConfig);
 
         // Load real OS version + latest version cache.
-        // (The backend may still be querying; the UI will show “Checking…”.)
+        // (The backend may still be querying; the UI will show "Checking…".)
         await refreshOSUpdateInfo(false, nextConfig);
+
+        // Load model update status
+        await refreshModelUpdateInfo();
 
         try {
           const staged = await getUploadedUpdatePackageApi();
@@ -343,6 +433,7 @@ function Updates() {
     return () => {
       stopProgressPolling();
       stopOSCheckProgressPolling();
+      stopModelPolling();
     };
   }, [messageApi]);
 
@@ -522,10 +613,47 @@ function Updates() {
       return;
     }
     setCheckingModel(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setCheckingModel(false);
-    messageApi.success("New model update available!");
+    try {
+      await checkModelUpdatesApi();
+      messageApi.info("Checking for model updates...");
+
+      // Poll for status updates while checking
+      startModelPolling();
+
+      // Wait and poll for the check to complete (up to 30 seconds)
+      let latestStatus = await getModelUpdateStatusApi();
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        latestStatus = await getModelUpdateStatusApi();
+
+        // If we got a recent check (within 10 seconds), we're done
+        if (latestStatus.data.last_check) {
+          const checkTime = new Date(latestStatus.data.last_check).getTime();
+          const now = Date.now();
+          if (now - checkTime < 10000) break;
+        }
+      }
+
+      stopModelPolling();
+      await refreshModelUpdateInfo();
+
+      // Check the latest status for proper feedback
+      if (latestStatus.data.last_error) {
+        messageApi.warning(`Check completed with error: ${latestStatus.data.last_error}`);
+      } else if (latestStatus.data.update_available) {
+        messageApi.success("New model update available!");
+      } else if (latestStatus.data.current_version > 0) {
+        messageApi.success("Model is up to date");
+      } else {
+        messageApi.info("Check completed. Camera may need to be registered first.");
+      }
+    } catch (err) {
+      console.error("Failed to check model updates:", err);
+      messageApi.error("Failed to check for model updates");
+      stopModelPolling();
+    } finally {
+      setCheckingModel(false);
+    }
   };
 
   const handleInstallUpdate = async (type: "os" | "model") => {
@@ -685,6 +813,10 @@ function Updates() {
         {info.hasUpdate ? (
           <div className="px-12 py-4 rounded-full bg-cta/20 text-cta text-12 font-medium">
             {info.isDowngrade ? "Downgrade Available" : "Update Available"}
+          </div>
+        ) : info.currentVersion === "(not installed)" && info.latestVersion !== "(unknown)" ? (
+          <div className="px-12 py-4 rounded-full bg-cta/20 text-cta text-12 font-medium">
+            Awaiting download
           </div>
         ) : (
           <div className="flex items-center gap-4 text-12 text-platinum/60">
@@ -960,7 +1092,9 @@ function Updates() {
             handleSelfHostedModelUrlChange,
             checkingModel,
             handleCheckModelUpdates,
-            () => handleInstallUpdate("model")
+            () => handleInstallUpdate("model"),
+            undefined, // checkProgress - model updates auto-download
+            modelDownloadProgress.status !== "idle" ? modelDownloadProgress : undefined
           )}
         </div>
 

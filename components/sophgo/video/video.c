@@ -114,6 +114,7 @@ int startVideo() {
     APP_CHK_RET(app_ipcam_Venc_Start(APP_VENC_ALL), "start video processing");
 
     is_started = true;
+    return 0;
 }
 
 int setupVideo(video_ch_index_t ch, const video_ch_param_t* param) {

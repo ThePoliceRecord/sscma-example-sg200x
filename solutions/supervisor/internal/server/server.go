@@ -12,8 +12,11 @@ import (
 	"supervisor/internal/api"
 	"supervisor/internal/auth"
 	"supervisor/internal/config"
+	"supervisor/internal/detectionqueue"
+	"supervisor/internal/detectionshm"
 	"supervisor/internal/handler"
 	"supervisor/internal/middleware"
+	"supervisor/internal/ntp"
 	"supervisor/internal/oobe"
 	"supervisor/internal/system"
 	"supervisor/internal/tls"
@@ -22,18 +25,22 @@ import (
 
 // Server represents the HTTP server.
 type Server struct {
-	cfg         *config.Config
-	httpServer  *http.Server
-	httpsServer *http.Server
-	authManager *auth.AuthManager
-	wifiHandler *handler.WiFiHandler
-	qrHandler   *handler.QRHandler
-	tlsManager  *tls.Manager
-	oobeManager *oobe.Manager
+	cfg              *config.Config
+	httpServer       *http.Server
+	httpsServer      *http.Server
+	authManager      *auth.AuthManager
+	wifiHandler      *handler.WiFiHandler
+	qrHandler        *handler.QRHandler
+	tlsManager       *tls.Manager
+	oobeManager      *oobe.Manager
+	ntpManager       *ntp.Manager
+	detectionShmLoop *detectionshm.ConsumerLoop
+	serverCtx        context.Context
+	serverCancel     context.CancelFunc
 }
 
 // New creates a new Server.
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config, ntpManager *ntp.Manager) *Server {
 	// Build certificate subject from config
 	certSubject := tls.CertSubject{
 		Organization: cfg.CertOrganization,
@@ -44,11 +51,17 @@ func New(cfg *config.Config) *Server {
 		// CommonName is left empty to use device name from file
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &Server{
-		cfg:         cfg,
-		authManager: auth.NewAuthManager(cfg),
-		tlsManager:  tls.NewManagerWithSubject(cfg.CertDir, certSubject),
-		oobeManager: oobe.New(),
+		cfg:              cfg,
+		authManager:      auth.NewAuthManager(cfg),
+		tlsManager:       tls.NewManagerWithSubject(cfg.CertDir, certSubject),
+		oobeManager:      oobe.New(),
+		ntpManager:       ntpManager,
+		detectionShmLoop: detectionshm.NewConsumerLoop(detectionqueue.GetUploader()),
+		serverCtx:        ctx,
+		serverCancel:     cancel,
 	}
 }
 
@@ -74,6 +87,17 @@ func (s *Server) Start() error {
 	if err := s.oobeManager.Start(); err != nil {
 		logger.Warning("OOBE initialization failed: %v", err)
 		// Non-fatal - continue with normal operation
+	}
+
+	// Start detection shared memory consumer (reads from camera-detector)
+	logger.Info("Starting detection SHM consumer...")
+	if s.detectionShmLoop != nil {
+		if err := s.detectionShmLoop.Start(s.serverCtx); err != nil {
+			logger.Warning("Detection SHM consumer failed to start: %v", err)
+			// Non-fatal - HTTP fallback still available
+		}
+	} else {
+		logger.Warning("Detection SHM loop is nil!")
 	}
 
 	apiMux := s.setupRoutes()
@@ -203,6 +227,16 @@ func (s *Server) httpsRedirectHandler() http.Handler {
 
 // Stop gracefully stops the server.
 func (s *Server) Stop(ctx context.Context) error {
+	// Cancel server context to stop background goroutines
+	if s.serverCancel != nil {
+		s.serverCancel()
+	}
+
+	// Stop detection SHM consumer
+	if s.detectionShmLoop != nil {
+		s.detectionShmLoop.Stop()
+	}
+
 	// Stop OOBE manager first
 	if s.oobeManager != nil {
 		if err := s.oobeManager.Stop(ctx); err != nil {
@@ -243,13 +277,16 @@ func (s *Server) setupRoutes() http.Handler {
 
 	// Create handlers
 	userHandler := handler.NewUserHandler(s.authManager)
-	deviceHandler := handler.NewDeviceHandler()
+	deviceHandler := handler.NewDeviceHandler(s.ntpManager)
 	s.wifiHandler = handler.NewWiFiHandler()
 	fileHandler := handler.NewFileHandler()
 	ledHandler := handler.NewLEDHandler()
 	s.qrHandler = handler.NewQRHandler()
 	recordingHandler := handler.NewRecordingHandler()
 	updateConfigHandler := handler.NewUpdateConfigHandler()
+	detectionHandler := handler.NewDetectionHandler()
+	storageHandler := handler.NewStorageHandler()
+	securityHandler := handler.NewSecurityHandler()
 
 	// Paths that don't require authentication
 	// Only include endpoints needed before login
@@ -316,6 +353,10 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/deviceMgr/codeRegistrationStatus", deviceHandler.GetCodeRegistrationStatus)
 	apiHandler.HandleFunc("/api/deviceMgr/cancelCodeRegistration", deviceHandler.CancelCodeRegistration)
 
+	// Model update management
+	apiHandler.HandleFunc("/api/deviceMgr/getModelUpdateStatus", deviceHandler.GetModelUpdateStatus)
+	apiHandler.HandleFunc("/api/deviceMgr/checkModelUpdates", deviceHandler.CheckModelUpdates)
+
 	// Camera/Video management
 	apiHandler.HandleFunc("/api/channels", handler.GetChannels)
 
@@ -357,8 +398,33 @@ func (s *Server) setupRoutes() http.Handler {
 	apiHandler.HandleFunc("/api/qr/health", s.qrHandler.GetHealth)
 	// Note: Cancel uses DELETE on /api/qr/scan/{id}, handled by GetScanStatus/CancelScan based on method
 
+	// Detection management (stats only - actual upload endpoint is unauthenticated)
+	apiHandler.HandleFunc("/api/detection/stats", detectionHandler.GetDetectionStats)
+	apiHandler.HandleFunc("/api/detection/queue", detectionHandler.GetDetectionQueue)
+	apiHandler.HandleFunc("/api/detection/image", detectionHandler.GetDetectionImage)
+
+	// Storage/Database management
+	apiHandler.HandleFunc("/api/storage/cleanupStatus", storageHandler.GetCleanupStatus)
+	apiHandler.HandleFunc("/api/storage/cleanup", storageHandler.RunCleanup)
+	apiHandler.HandleFunc("/api/storage/dbStats", storageHandler.GetDatabaseStats)
+	apiHandler.HandleFunc("/api/storage/scanMissing", storageHandler.ScanMissingFiles)
+
+	// Security configuration (firmware signing, TSA timestamping, frame hashing)
+	apiHandler.HandleFunc("/api/security/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			securityHandler.GetSecurityConfig(w, r)
+		} else if r.Method == http.MethodPost {
+			securityHandler.SetSecurityConfig(w, r)
+		} else {
+			api.WriteError(w, -1, "Method not allowed")
+		}
+	})
+
 	// Apply auth middleware to API routes
 	mux.Handle("/api/", authMiddleware(apiHandler))
+
+	// Detection upload endpoint - no auth required (comes from local camera-detector)
+	mux.HandleFunc("/detection", detectionHandler.HandleDetection)
 
 	// Static file server for web UI
 	fileServer := http.FileServer(http.Dir(s.cfg.RootDir))

@@ -107,8 +107,24 @@ add_executable(camera-streamer
     ${SOPHGO_VIDEO_SRC}
 )
 
+# OpenSSL for cross-compilation (in TPU SDK)
+if(NOT DEFINED SYSROOT)
+    set(TPU_SDK_PATH "${SG200X_SDK_PATH}/tpu_musl_riscv64/cvitek_tpu_sdk")
+    if(EXISTS "${TPU_SDK_PATH}/include/openssl")
+        set(OPENSSL_ROOT_DIR "${TPU_SDK_PATH}")
+        set(OPENSSL_INCLUDE_DIR "${TPU_SDK_PATH}/include")
+        set(OPENSSL_CRYPTO_LIBRARY "${TPU_SDK_PATH}/lib/libcrypto.so")
+        set(OPENSSL_SSL_LIBRARY "${TPU_SDK_PATH}/lib/libssl.so")
+    endif()
+endif()
+
+# Find OpenSSL for SHA256 frame hashing (evidence integrity)
+find_package(OpenSSL REQUIRED)
+
 # Link SDK libraries (complete set)
 target_link_libraries(camera-streamer
+    # OpenSSL for SHA256 frame hashing
+    OpenSSL::Crypto
     # Video subsystem
     venc vpss vi vdec vo
     # ISP and algorithms

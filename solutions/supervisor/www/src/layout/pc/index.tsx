@@ -7,7 +7,8 @@ import {
   VideoCameraOutlined,
   BulbOutlined,
   CloudDownloadOutlined,
-  InfoCircleOutlined
+  InfoCircleOutlined,
+  CloudUploadOutlined,
 } from "@ant-design/icons";
 import useConfigStore from "@/store/config";
 import { clearCurrentUser } from "@/store/user";
@@ -45,6 +46,7 @@ const menuList: MenuItem[][] = [
     },
     { label: "Files", icon: FilesImg, route: "/files" },
     { label: "Recording", antIcon: <VideoCameraOutlined />, route: "/recording" },
+    { label: "Detections", antIcon: <CloudUploadOutlined />, route: "/detections" },
     { label: "Security", icon: SecurityImg, route: "/security" },
     { label: "Network", icon: NetworkImg, route: "/network" },
   ],

@@ -9,10 +9,15 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <utime.h>
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
 #include <atomic>
+
+extern "C" {
+#include "cameradb.h"
+}
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -32,13 +37,13 @@ private:
     uint8_t* buffer;
     std::atomic<bool> running;
     bool consumerInitialized;
-    
+
     // libav contexts
     AVFormatContext* formatCtx;
     AVStream* videoStream;
     AVCodecContext* codecCtx;
     AVPacket* packet;
-    
+
     // Timing
     std::chrono::steady_clock::time_point startTime;
     int64_t bytesWritten;
@@ -47,16 +52,21 @@ private:
     int64_t lastDts; // Track last DTS for monotonic timestamps
     uint8_t detectedFps;
     std::string currentFilename;  // Store current recording filename
-    
+
     // SPS/PPS caching for codec configuration
     std::vector<uint8_t> spsData;
     std::vector<uint8_t> ppsData;
     bool codecConfigured;
-    
+
     // Configuration
     int videoWidth;
     int videoHeight;
     int videoFramerate;
+
+    // Database integration
+    cameradb_t* db;
+    int64_t currentRecordingId;
+    bool dbEnabled;
     
     // H.264 NAL unit types
     static const uint8_t NAL_TYPE_SPS = 7;
@@ -287,11 +297,33 @@ private:
         }
         videoStream = nullptr;
         codecConfigured = false;
+
+        // End the current recording in the database
+        if (db && currentRecordingId > 0 && !currentFilename.empty()) {
+            // Get file size
+            struct stat st;
+            int64_t fileSize = 0;
+            if (stat(currentFilename.c_str(), &st) == 0) {
+                fileSize = st.st_size;
+            }
+
+            // Calculate end timestamp from first frame + elapsed time
+            int64_t endTsMs = firstFrameTimestamp;
+            if (firstFrameTimestamp > 0) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                endTsMs = firstFrameTimestamp + elapsed;
+            }
+
+            cameradb_recording_end(db, currentRecordingId, endTsMs, fileSize);
+            currentRecordingId = 0;
+        }
     }
 
     bool rotateFile() {
+        // Close previous file (this also ends the recording in the DB)
         closeOutputFile();
-        
+
         currentFilename = generateFilename();
         if (!openOutputFile(currentFilename)) {
             return false;
@@ -302,7 +334,18 @@ private:
         frameCount = 0;
         firstFrameTimestamp = 0;
         lastDts = 0;
+        currentRecordingId = 0;
         return true;
+    }
+
+    // Set file mtime to match first frame timestamp for filesystem-level correlation
+    void setFileMtime(int64_t timestampMs) {
+        if (currentFilename.empty()) return;
+
+        struct utimbuf times;
+        times.actime = timestampMs / 1000;   // Access time (seconds)
+        times.modtime = timestampMs / 1000;  // Modification time (seconds)
+        utime(currentFilename.c_str(), &times);
     }
 
     // Convert Annex-B NAL units to AVCC format (length-prefixed)
@@ -361,16 +404,21 @@ private:
     }
 
 public:
-    Recorder(const std::string& dir) 
+    Recorder(const std::string& dir)
         : outputDir(dir), buffer(nullptr), running(false), consumerInitialized(false),
           formatCtx(nullptr), videoStream(nullptr), codecCtx(nullptr), packet(nullptr),
           bytesWritten(0), frameCount(0), firstFrameTimestamp(0), lastDts(0), detectedFps(30), codecConfigured(false),
-          videoWidth(1920), videoHeight(1080), videoFramerate(30) {
+          videoWidth(1920), videoHeight(1080), videoFramerate(30),
+          db(nullptr), currentRecordingId(0), dbEnabled(true) {
         memset(&consumer, 0, sizeof(consumer));
     }
 
     ~Recorder() {
         close();
+    }
+
+    void setDbEnabled(bool enabled) {
+        dbEnabled = enabled;
     }
 
     bool init() {
@@ -408,6 +456,16 @@ public:
             return false;
         }
 
+        // Initialize database
+        if (dbEnabled) {
+            if (cameradb_open(&db) == 0) {
+                std::cout << "Database logging enabled" << std::endl;
+            } else {
+                std::cerr << "WARNING: Failed to open database, logging disabled" << std::endl;
+                db = nullptr;
+            }
+        }
+
         running = true;
         return true;
     }
@@ -415,7 +473,12 @@ public:
     void close() {
         running = false;
         closeOutputFile();
-        
+
+        if (db) {
+            cameradb_close(db);
+            db = nullptr;
+        }
+
         if (packet) {
             av_packet_free(&packet);
             packet = nullptr;
@@ -516,6 +579,15 @@ public:
             // Store first frame timestamp for relative timing
             if (firstFrameTimestamp == 0) {
                 firstFrameTimestamp = meta.timestamp_ms;
+
+                // Register recording in database with first frame timestamp
+                if (db && currentRecordingId == 0) {
+                    currentRecordingId = cameradb_recording_start(db, currentFilename.c_str(), firstFrameTimestamp);
+                    if (currentRecordingId > 0) {
+                        // Set file mtime to match first frame timestamp
+                        setFileMtime(firstFrameTimestamp);
+                    }
+                }
             }
 
             // Prepare packet with proper buffer allocation
@@ -594,13 +666,18 @@ int main(int argc, char* argv[]) {
     
     // Simple argument parsing
     bool userSpecifiedDir = false;
+    bool dbEnabled = true;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             outputDir = argv[++i];
             userSpecifiedDir = true;
+        } else if (strcmp(argv[i], "--no-db") == 0) {
+            dbEnabled = false;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            std::cout << "Usage: " << argv[0] << " [-o output_dir]" << std::endl;
-            std::cout << "Default: /mnt/sd (or /userdata/video if SD card not mounted)" << std::endl;
+            std::cout << "Usage: " << argv[0] << " [-o output_dir] [--no-db]" << std::endl;
+            std::cout << "Options:" << std::endl;
+            std::cout << "  -o dir    Output directory (default: /mnt/sd or /userdata/video)" << std::endl;
+            std::cout << "  --no-db   Disable SQLite database logging" << std::endl;
             return 0;
         }
     }
@@ -623,6 +700,7 @@ int main(int argc, char* argv[]) {
     }
 
     Recorder recorder(outputDir);
+    recorder.setDbEnabled(dbEnabled);
     g_recorder = &recorder;
 
     // Setup signal handlers

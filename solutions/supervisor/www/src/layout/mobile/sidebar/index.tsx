@@ -15,7 +15,8 @@ import {
   VideoCameraOutlined,
   BulbOutlined,
   CloudDownloadOutlined,
-  InfoCircleOutlined
+  InfoCircleOutlined,
+  CloudUploadOutlined,
 } from "@ant-design/icons";
 
 function Sidebar() {
@@ -51,6 +52,7 @@ function Sidebar() {
       },
       { label: "Files", icon: FilesImg, route: "/files" },
       { label: "Recording", antIcon: <VideoCameraOutlined />, route: "/recording" },
+      { label: "Detections", antIcon: <CloudUploadOutlined />, route: "/detections" },
       { label: "Security", icon: SecurityImg, route: "/security" },
       { label: "Network", icon: NetworkImg, route: "/network" },
     ],

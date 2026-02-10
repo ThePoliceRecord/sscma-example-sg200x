@@ -18,6 +18,12 @@ if(DEFINED SYSROOT)
     message(STATUS "SYSROOT: ${SYSROOT}")
     set(SDK_INCLUDE ${SYSROOT}/usr/include)
     set(SDK_LIB ${SYSROOT}/usr/lib)
+
+    # Force OpenSSL to use sysroot paths (prevents finding host x86_64 libs)
+    set(OPENSSL_ROOT_DIR "${SYSROOT}/usr")
+    set(OPENSSL_INCLUDE_DIR "${SYSROOT}/usr/include")
+    set(OPENSSL_CRYPTO_LIBRARY "${SYSROOT}/usr/lib/libcrypto.so")
+    set(OPENSSL_SSL_LIBRARY "${SYSROOT}/usr/lib/libssl.so")
     
     # CVI SDK headers are in output directory (passed via SG200X_SDK_PATH)
     if(DEFINED SG200X_SDK_PATH)

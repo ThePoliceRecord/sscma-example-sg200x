@@ -89,7 +89,7 @@ func DefaultConfig() *Config {
 		LocalDir: "/userdata",
 		SDDir:    "/mnt/sd",
 
-		LogLevel: LogWarning,
+		LogLevel: LogInfo,
 
 		DaemonMode: false,
 

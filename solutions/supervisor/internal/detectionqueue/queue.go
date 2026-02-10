@@ -26,7 +26,8 @@ const (
 // DetectionItem represents a queued detection with trusted timestamp support
 type DetectionItem struct {
 	ID              string    `json:"id"`
-	ImagePath       string    `json:"image_path"`
+	ImageData       []byte    `json:"-"`                  // In-memory JPEG data (not serialized to disk)
+	ImagePath       string    `json:"image_path"`         // Only set if persisted to disk
 	BoundingBox     string    `json:"bounding_box"`       // JSON array: [x1,y1,x2,y2]
 	ClassLabel      string    `json:"class_label"`
 	ConfidenceScore float64   `json:"confidence_score"`
@@ -178,8 +179,23 @@ func (q *Queue) loadFromDisk() {
 }
 
 // saveToDisk persists the queue to disk
+// For items with in-memory ImageData, writes the image to disk first
 func (q *Queue) saveToDisk() error {
 	metaPath := filepath.Join(q.queueDir, MetadataFile)
+
+	// Before saving, ensure all items with ImageData have it written to disk
+	for i := range q.items {
+		if len(q.items[i].ImageData) > 0 && q.items[i].ImagePath == "" {
+			// Write image to disk
+			imagePath := filepath.Join(q.queueDir, fmt.Sprintf("det_%s.jpg", q.items[i].ID))
+			if err := os.WriteFile(imagePath, q.items[i].ImageData, 0644); err != nil {
+				logger.Warning("Failed to persist image for %s: %v", q.items[i].ID, err)
+				continue
+			}
+			q.items[i].ImagePath = imagePath
+			logger.Debug("Persisted image to %s (%d bytes)", imagePath, len(q.items[i].ImageData))
+		}
+	}
 
 	meta := queueMetadata{Items: q.items}
 	data, err := json.MarshalIndent(meta, "", "  ")

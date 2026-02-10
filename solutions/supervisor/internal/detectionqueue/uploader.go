@@ -226,7 +226,7 @@ func (u *Uploader) run(ctx context.Context) {
 		if err != nil {
 			logger.Warning("Detection upload failed: %v (retry #%d)", err, item.RetryCount)
 
-			// Update retry count
+			// Update retry count (this also persists in-memory items to disk)
 			u.queue.UpdateRetryCount()
 
 			// Increment failed counter
@@ -278,16 +278,28 @@ func (u *Uploader) upload(item *DetectionItem) error {
 	// Get platform URL
 	apiURL := getPlatformURL()
 
-	// Read image from disk
-	imageData, err := os.ReadFile(item.ImagePath)
-	if err != nil {
-		return fmt.Errorf("failed to read image: %w", err)
+	// Get image data - prefer in-memory, fall back to disk
+	var imageData []byte
+	if len(item.ImageData) > 0 {
+		// Use in-memory data
+		imageData = item.ImageData
+		logger.Debug("Using in-memory image data (%d bytes)", len(imageData))
+	} else if item.ImagePath != "" {
+		// Fall back to reading from disk (for items loaded after restart)
+		var err error
+		imageData, err = os.ReadFile(item.ImagePath)
+		if err != nil {
+			return fmt.Errorf("failed to read image: %w", err)
+		}
+		logger.Debug("Loaded image from disk: %s (%d bytes)", item.ImagePath, len(imageData))
+	} else {
+		return fmt.Errorf("no image data or path available")
 	}
 
 	// Debug: log what we're uploading
 	isJPEG := len(imageData) >= 2 && imageData[0] == 0xFF && imageData[1] == 0xD8
-	logger.Info("DEBUG upload: path=%s size=%d isJPEG=%v class=%s conf=%.2f",
-		item.ImagePath, len(imageData), isJPEG, item.ClassLabel, item.ConfidenceScore)
+	logger.Info("DEBUG upload: size=%d isJPEG=%v class=%s conf=%.2f",
+		len(imageData), isJPEG, item.ClassLabel, item.ConfidenceScore)
 	if len(imageData) >= 4 {
 		logger.Info("DEBUG upload: magic=0x%02x%02x%02x%02x",
 			imageData[0], imageData[1], imageData[2], imageData[3])

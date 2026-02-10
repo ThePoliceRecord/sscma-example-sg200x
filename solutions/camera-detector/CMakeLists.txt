@@ -57,12 +57,20 @@ else()
     # TPU SDK paths for standalone
     set(TPU_SDK_INCLUDE ${SG200X_SDK_PATH}/tpu_musl_riscv64/cvitek_tpu_sdk/include)
     set(TPU_SDK_LIB ${SG200X_SDK_PATH}/tpu_musl_riscv64/cvitek_tpu_sdk/lib)
+
+    # Buildroot sysroot for libjpeg and other system libraries
+    set(BUILDROOT_SYSROOT ${SG200X_SDK_PATH}/sg2002_recamera_emmc/buildroot-2021.05/output/cvitek_CV181X_musl_riscv64/host/riscv64-buildroot-linux-musl/sysroot)
+    if(EXISTS ${BUILDROOT_SYSROOT})
+        message(STATUS "Buildroot sysroot: ${BUILDROOT_SYSROOT}")
+        set(SYSROOT_INCLUDE ${BUILDROOT_SYSROOT}/usr/include)
+        set(SYSROOT_LIB ${BUILDROOT_SYSROOT}/usr/lib)
+    endif()
 endif()
 
 # Component paths
 get_filename_component(COMPONENTS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../components" ABSOLUTE)
 set(VIDEO_DIR "${COMPONENTS_ROOT}/sophgo/video")
-set(DETECTIONQUEUE_DIR "${COMPONENTS_ROOT}/detectionqueue")
+set(MONGOOSE_DIR "${COMPONENTS_ROOT}/mongoose")
 set(SSCMA_DIR "${COMPONENTS_ROOT}/sscma-micro")
 set(SSCMA_ROOT "${SSCMA_DIR}/sscma-micro")
 set(SSCMA_CORE "${SSCMA_ROOT}/sscma/core")
@@ -121,9 +129,10 @@ set(SSCMA_SOURCES
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${VIDEO_DIR}/include
-    ${DETECTIONQUEUE_DIR}/include
+    ${MONGOOSE_DIR}
     ${TPU_SDK_INCLUDE}
     ${SDK_INCLUDE}
+    ${SYSROOT_INCLUDE}
     ${SSCMA_ROOT}/sscma
     ${SSCMA_ROOT}/3rdparty/eigen
     ${SSCMA_DIR}/porting/sophgo
@@ -135,6 +144,7 @@ include_directories(
 link_directories(
     ${TPU_SDK_LIB}
     ${SDK_LIB}
+    ${SYSROOT_LIB}
 )
 
 # Compiler flags
@@ -151,27 +161,30 @@ add_library(video_raw_shm STATIC
     ${VIDEO_DIR}/src/video_raw_shm.c
 )
 
-# Create detectionqueue library
-add_library(detectionqueue STATIC
-    ${DETECTIONQUEUE_DIR}/src/detection_shm.c
+# Create mongoose library (WebSocket/networking)
+add_library(mongoose STATIC
+    ${MONGOOSE_DIR}/mongoose.c
 )
-target_include_directories(detectionqueue PUBLIC
-    ${DETECTIONQUEUE_DIR}/include
+target_compile_definitions(mongoose PUBLIC
+    MG_ENABLE_OPENSSL=0
+    MG_ENABLE_MBEDTLS=0
+    MG_ENABLE_IPV6=0
 )
 
 # Main executable
 add_executable(camera-detector
     main.cpp
-    detection_shm_producer.cpp
+    detection_ws_client.cpp
     ${SSCMA_SOURCES}
 )
 
 # Link libraries
-# Note: JPEG encoding uses bundled stb_image_write.h (header-only, no external lib needed)
+# Note: JPEG encoding uses libjpeg for robust, standard-compliant encoding
 target_link_libraries(camera-detector
     video_raw_shm
-    detectionqueue
+    mongoose
     cviruntime
+    jpeg
     rt
     pthread
     m

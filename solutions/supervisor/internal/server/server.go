@@ -12,8 +12,6 @@ import (
 	"supervisor/internal/api"
 	"supervisor/internal/auth"
 	"supervisor/internal/config"
-	"supervisor/internal/detectionqueue"
-	"supervisor/internal/detectionshm"
 	"supervisor/internal/handler"
 	"supervisor/internal/middleware"
 	"supervisor/internal/ntp"
@@ -28,13 +26,13 @@ type Server struct {
 	cfg              *config.Config
 	httpServer       *http.Server
 	httpsServer      *http.Server
+	detectionWsServer *http.Server
 	authManager      *auth.AuthManager
 	wifiHandler      *handler.WiFiHandler
 	qrHandler        *handler.QRHandler
 	tlsManager       *tls.Manager
 	oobeManager      *oobe.Manager
 	ntpManager       *ntp.Manager
-	detectionShmLoop *detectionshm.ConsumerLoop
 	serverCtx        context.Context
 	serverCancel     context.CancelFunc
 }
@@ -54,14 +52,13 @@ func New(cfg *config.Config, ntpManager *ntp.Manager) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Server{
-		cfg:              cfg,
-		authManager:      auth.NewAuthManager(cfg),
-		tlsManager:       tls.NewManagerWithSubject(cfg.CertDir, certSubject),
-		oobeManager:      oobe.New(),
-		ntpManager:       ntpManager,
-		detectionShmLoop: detectionshm.NewConsumerLoop(detectionqueue.GetUploader()),
-		serverCtx:        ctx,
-		serverCancel:     cancel,
+		cfg:          cfg,
+		authManager:  auth.NewAuthManager(cfg),
+		tlsManager:   tls.NewManagerWithSubject(cfg.CertDir, certSubject),
+		oobeManager:  oobe.New(),
+		ntpManager:   ntpManager,
+		serverCtx:    ctx,
+		serverCancel: cancel,
 	}
 }
 
@@ -89,16 +86,8 @@ func (s *Server) Start() error {
 		// Non-fatal - continue with normal operation
 	}
 
-	// Start detection shared memory consumer (reads from camera-detector)
-	logger.Info("Starting detection SHM consumer...")
-	if s.detectionShmLoop != nil {
-		if err := s.detectionShmLoop.Start(s.serverCtx); err != nil {
-			logger.Warning("Detection SHM consumer failed to start: %v", err)
-			// Non-fatal - HTTP fallback still available
-		}
-	} else {
-		logger.Warning("Detection SHM loop is nil!")
-	}
+	// Start detection WebSocket server (receives from camera-detector)
+	s.startDetectionWsServer()
 
 	apiMux := s.setupRoutes()
 
@@ -232,9 +221,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.serverCancel()
 	}
 
-	// Stop detection SHM consumer
-	if s.detectionShmLoop != nil {
-		s.detectionShmLoop.Stop()
+	// Stop detection WebSocket server
+	if s.detectionWsServer != nil {
+		if err := s.detectionWsServer.Shutdown(ctx); err != nil {
+			logger.Error("Detection WS server shutdown error: %v", err)
+		}
 	}
 
 	// Stop OOBE manager first
@@ -447,4 +438,33 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"timestamp": time.Now().Unix(),
 		"version":   "1.0.0", // Will be set at build time
 	})
+}
+
+// startDetectionWsServer starts the WebSocket server for receiving detections from camera-detector.
+// This runs on a separate port (8089) and only accepts connections from localhost.
+func (s *Server) startDetectionWsServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws/detection", handler.HandleDetectionWebSocket)
+
+	addr := fmt.Sprintf("127.0.0.1:%d", handler.DetectionWsPort)
+	s.detectionWsServer = &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	logger.Info("========================================")
+	logger.Info("Detection WebSocket Server")
+	logger.Info("Endpoint: ws://%s/ws/detection", addr)
+	logger.Info("Accepts: localhost connections only")
+	logger.Info("========================================")
+
+	go func() {
+		logger.Info("Detection WS server listening on %s", addr)
+		if err := s.detectionWsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Detection WS server FAILED: %v", err)
+		}
+	}()
 }

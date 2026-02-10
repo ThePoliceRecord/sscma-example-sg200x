@@ -4,7 +4,7 @@
  *
  * Reads raw RGB frames from shared memory (produced by camera-streamer)
  * and runs object detection inference using sscma-micro.
- * Detections are sent to the local supervisor for upload to the platform.
+ * Detections are sent to the local supervisor via WebSocket.
  */
 
 #include <iostream>
@@ -24,7 +24,7 @@
 #include <core/model/ma_model_factory.h>
 #include <core/model/ma_model_detector.h>
 
-#include "detection_shm_producer.hpp"
+#include "detection_ws_client.hpp"
 
 extern "C" {
 #include "video_raw_shm.h"
@@ -122,10 +122,11 @@ static void signal_handler(int sig) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        printf("Usage: %s <model.cvimodel> [threshold] [--no-shm]\n", argv[0]);
+        printf("Usage: %s <model.cvimodel> [threshold] [--no-ws] [--ws-port PORT]\n", argv[0]);
         printf("Example: %s /userdata/Models/yolo11.cvimodel 0.5\n", argv[0]);
         printf("Options:\n");
-        printf("  --no-shm     Disable sending detections to shared memory\n");
+        printf("  --no-ws       Disable sending detections via WebSocket\n");
+        printf("  --ws-port N   WebSocket port (default: %d)\n", DetectionWsClient::DEFAULT_WS_PORT);
         return 1;
     }
 
@@ -133,10 +134,13 @@ int main(int argc, char** argv) {
     float threshold = (argc >= 3 && argv[2][0] != '-') ? atof(argv[2]) : 0.5f;
 
     // Check for command line flags
-    bool enable_shm = true;
+    bool enable_ws = true;
+    int ws_port = DetectionWsClient::DEFAULT_WS_PORT;
     for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--no-shm") == 0) {
-            enable_shm = false;
+        if (strcmp(argv[i], "--no-ws") == 0) {
+            enable_ws = false;
+        } else if (strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
+            ws_port = atoi(argv[++i]);
         }
     }
 
@@ -223,19 +227,13 @@ int main(int argc, char** argv) {
                TAG, input_width, input_height, VIDEO_RAW_WIDTH, VIDEO_RAW_HEIGHT);
     }
 
-    // Initialize detection shared memory producer
-    DetectionShmProducer* detection_producer = nullptr;
-    if (enable_shm) {
-        detection_producer = new DetectionShmProducer();
-        if (detection_producer->isInitialized()) {
-            printf("%s: Detection shared memory enabled\n", TAG);
-        } else {
-            printf("%s: WARNING: Failed to initialize shm producer\n", TAG);
-            delete detection_producer;
-            detection_producer = nullptr;
-        }
+    // Initialize detection WebSocket client
+    DetectionWsClient* detection_client = nullptr;
+    if (enable_ws) {
+        detection_client = new DetectionWsClient(ws_port);
+        printf("%s: Detection WebSocket client enabled (port %d)\n", TAG, ws_port);
     } else {
-        printf("%s: Detection shared memory disabled\n", TAG);
+        printf("%s: Detection WebSocket disabled\n", TAG);
     }
 
     // Initialize shared memory consumer
@@ -268,6 +266,12 @@ int main(int argc, char** argv) {
     while (g_running) {
         // Wait for next frame (100ms timeout)
         int size = video_raw_consumer_wait(&consumer, frame_buffer, &meta, 100);
+
+        // Always poll WebSocket client to handle reconnection and I/O
+        if (detection_client) {
+            detection_client->poll(10);  // Give mongoose time to process events
+        }
+
         if (size <= 0) {
             // Timeout or error, continue
             continue;
@@ -333,20 +337,20 @@ int main(int argc, char** argv) {
                 detections.push_back(det);
             }
 
-            // Send detections to shared memory with frame evidence for trusted timestamps
-            if (detection_producer && !detections.empty()) {
+            // Send detections via WebSocket with frame evidence for trusted timestamps
+            if (detection_client && !detections.empty()) {
                 // Build frame evidence from metadata (for trusted timestamp chain)
                 FrameEvidence evidence;
                 evidence.timestamp_ms = meta.timestamp_ms;
                 std::memcpy(evidence.frame_hash, meta.frame_hash, 32);
                 evidence.valid = (meta.timestamp_ms > 0);  // Only valid if NTP was synced at capture
 
-                if (!detection_producer->send(frame_buffer, meta.width, meta.height, detections, evidence)) {
+                if (!detection_client->send(frame_buffer, meta.width, meta.height, detections, evidence)) {
                     // Log failure but don't stop processing
-                    uint32_t total_issues = detection_producer->getFailedCount() + detection_producer->getDroppedCount();
+                    uint32_t total_issues = detection_client->getFailedCount() + detection_client->getDroppedCount();
                     if (total_issues % 10 == 1) {
-                        fprintf(stderr, "%s: Detection write issue (failed: %u, dropped: %u)\n",
-                                TAG, detection_producer->getFailedCount(), detection_producer->getDroppedCount());
+                        fprintf(stderr, "%s: Detection send issue (failed: %u, dropped: %u)\n",
+                                TAG, detection_client->getFailedCount(), detection_client->getDroppedCount());
                     }
                 }
             }
@@ -365,17 +369,17 @@ int main(int argc, char** argv) {
     }
 
     // Print detection statistics
-    if (detection_producer) {
+    if (detection_client) {
         printf("%s: Detections sent: %u, dropped: %u, failed: %u\n",
-               TAG, detection_producer->getSentCount(),
-               detection_producer->getDroppedCount(),
-               detection_producer->getFailedCount());
+               TAG, detection_client->getSentCount(),
+               detection_client->getDroppedCount(),
+               detection_client->getFailedCount());
     }
 
     // Cleanup
     printf("%s: Cleaning up...\n", TAG);
-    if (detection_producer) {
-        delete detection_producer;
+    if (detection_client) {
+        delete detection_client;
     }
     free(frame_buffer);
     video_raw_consumer_destroy(&consumer);

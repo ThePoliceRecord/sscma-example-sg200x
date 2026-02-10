@@ -320,35 +320,31 @@ int video_raw_consumer_wait(video_raw_consumer_t* consumer,
         return -1;
     }
 
-    /* Wait for new frame signal */
+    /*
+     * Use polling instead of semaphores to avoid desync issues.
+     * The semaphore can get out of sync with frame_count when:
+     * - Consumer wakes from sem_wait but frame already read (returns 0)
+     * - Over time, semaphore depletes while frames are still being written
+     *
+     * Polling with short sleep is more robust and has acceptable latency
+     * for ML inference pipelines (1ms poll interval << inference time).
+     */
+    uint64_t deadline;
     if (timeout_ms == 0) {
-        /* Infinite wait */
-        if (sem_wait(consumer->sem_read) != 0) {
-            LOG_ERROR("sem_wait failed: %s", strerror(errno));
-            return -1;
-        }
+        deadline = UINT64_MAX;  /* Infinite wait */
     } else {
-        /* Timed wait */
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += timeout_ms / 1000;
-        ts.tv_nsec += (timeout_ms % 1000) * 1000000;
-        if (ts.tv_nsec >= 1000000000) {
-            ts.tv_sec++;
-            ts.tv_nsec -= 1000000000;
-        }
-
-        if (sem_timedwait(consumer->sem_read, &ts) != 0) {
-            if (errno == ETIMEDOUT) {
-                return 0;  /* Timeout */
-            }
-            LOG_ERROR("sem_timedwait failed: %s", strerror(errno));
-            return -1;
-        }
+        deadline = get_timestamp_ms() + timeout_ms;
     }
 
-    /* Read the frame */
-    return video_raw_consumer_read(consumer, data, meta);
+    while (get_timestamp_ms() < deadline) {
+        int ret = video_raw_consumer_read(consumer, data, meta);
+        if (ret != 0) {
+            return ret;  /* Got frame (>0) or error (<0) */
+        }
+        usleep(1000);  /* 1ms poll interval */
+    }
+
+    return 0;  /* Timeout */
 }
 
 int video_raw_consumer_stats(video_raw_consumer_t* consumer,
